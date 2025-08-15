@@ -10,10 +10,13 @@
 //! - **Password Security**: bcrypt hashing with configurable cost factors
 //! - **Type Safety**: Compile-time query verification with SQLx
 //! - **HTTP API**: RESTful endpoints with comprehensive error handling
+//! - **Flexible Router**: Configurable endpoints via RouterBuilder pattern
 //! - **Database Integration**: PostgreSQL with connection pooling
 //! - **Security First**: Protection against common vulnerabilities
 //!
 //! # Quick Start
+//!
+//! ## As a Service Library
 //!
 //! ```rust,no_run
 //! use user_service::{UserService, CreateUserRequest};
@@ -23,26 +26,88 @@
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let pool = PgPool::connect("postgres://localhost/db").await?;
 //!     let user_service = UserService::new(pool);
-//!     
+//!
 //!     let request = CreateUserRequest {
 //!         name: "Alice Smith".to_string(),
 //!         email: "alice@example.com".to_string(),
 //!         password: "SecurePass123!".to_string(),
 //!         profile_picture_url: None,
 //!     };
-//!     
+//!
 //!     let user = user_service.create_user(request).await?;
 //!     println!("Created user: {} ({})", user.name, user.email);
-//!     
+//!
 //!     Ok(())
 //! }
+//! ```
+//!
+//! ## As a Web Server Library
+//!
+//! ```rust,no_run
+//! use user_service::{
+//!     api::{AppState, RouterBuilder},
+//!     service::UserService,
+//!     database::DatabaseConfig,
+//! };
+//! use std::sync::Arc;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // Setup database and service
+//!     let config = DatabaseConfig::from_env()?;
+//!     let pool = config.create_pool().await?;
+//!     let user_service = UserService::new(pool);
+//!
+//!     // Create application state
+//!     let app_state = AppState {
+//!         user_service: Arc::new(user_service),
+//!     };
+//!
+//!     // Build custom router - only enable needed endpoints
+//!     let app = RouterBuilder::with_core_routes()
+//!         .build()
+//!         .with_state(app_state);
+//!
+//!     // Start server
+//!     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+//!     axum::serve(listener, app).await?;
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! # Router Builder Examples
+//!
+//! Create different service configurations:
+//!
+//! ```rust,no_run
+//! use user_service::api::RouterBuilder;
+//!
+//! // Full service with all endpoints
+//! let full_router = RouterBuilder::with_all_routes().build();
+//!
+//! // Authentication service
+//! let auth_router = RouterBuilder::new()
+//!     .health_check(true)
+//!     .get_user(true)
+//!     .verify_password(true)
+//!     .build();
+//!
+//! // User directory (read-only)
+//! let directory_router = RouterBuilder::with_readonly_routes().build();
+//!
+//! // Registration service
+//! let registration_router = RouterBuilder::new()
+//!     .health_check(true)
+//!     .create_user(true)
+//!     .build();
 //! ```
 //!
 //! # Architecture
 //!
 //! The library is organized into several layers:
 //!
-//! - **API Layer**: HTTP handlers and route definitions
+//! - **API Layer**: HTTP handlers and configurable route definitions
 //! - **Service Layer**: Business logic and data validation
 //! - **Models**: Data structures and type definitions
 //! - **Database**: Connection management and queries
@@ -54,40 +119,52 @@
 //! - SQL injection prevention through prepared statements
 //! - Input validation and sanitization
 //! - Security headers and CORS configuration
-//! - Rate limiting support structures
+//! - Configurable endpoint exposure for attack surface reduction
 
+/// HTTP API layer with handlers and configurable routing
 pub mod api;
+
+/// Database connection management and configuration
 pub mod database;
+
+/// Data models and request/response structures
 pub mod models;
+
+/// Business logic and user management services
 pub mod service;
+
+/// Shared utilities for security, validation, and error handling
 pub mod utils;
 
-// Re-export commonly used types for convenience
-pub use api::{create_routes, AppState};
+// Re-export commonly used types for convenient access
+pub use api::{create_routes, AppState, RouterBuilder};
 pub use models::{
-    requests::{CreateUserRequest, UpdateProfilePictureRequest, UpdateUserRequest, VerifyPasswordRequest},
+    requests::{
+        CreateUserRequest, UpdateProfilePictureRequest, UpdateUserRequest, VerifyPasswordRequest,
+    },
     user::User,
 };
 pub use service::UserService;
 pub use utils::error::{AppError, AppResult, ErrorResponse};
 
-// Re-export database utilities
+// Re-export database utilities for configuration
 pub use database::{DatabaseConfig, DatabasePool};
 
-/// Library version
+/// Library version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Default server configuration
+/// Default configuration constants for the service
 pub mod config {
-    /// Default server port
+    /// Default HTTP server port for development
     pub const DEFAULT_PORT: u16 = 3000;
-    
-    /// Default server host
+
+    /// Default server bind address (all interfaces)
     pub const DEFAULT_HOST: &str = "0.0.0.0";
-    
-    /// Default log level
+
+    /// Default logging level for the application
     pub const DEFAULT_LOG_LEVEL: &str = "info";
-    
-    /// Default bcrypt cost
+
+    /// Default bcrypt cost factor for password hashing
+    /// Higher values are more secure but slower
     pub const DEFAULT_BCRYPT_COST: u32 = 12;
 }

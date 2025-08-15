@@ -2,9 +2,9 @@
 //!
 //! Cryptographic functions, password hashing, and security-related utilities.
 
-use bcrypt::{DEFAULT_COST, hash, verify};
+use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{DateTime, Utc};
-use rand::{Rng, distributions::Alphanumeric};
+use rand::{distributions::Alphanumeric, Rng};
 use uuid::Uuid;
 
 /// Default bcrypt cost for password hashing

@@ -2,10 +2,10 @@
 //!
 //! Data structures for API request and response payloads with validation.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::{Validate, ValidationError};
-use chrono::{DateTime, Utc};
 
 use crate::utils::validation::{email_validator, name_validator, url_validator};
 
@@ -138,16 +138,16 @@ mod tests {
     fn test_password_strength_validation() {
         // Valid password
         assert!(validate_password_strength("SecurePass123!").is_ok());
-        
+
         // Missing lowercase
         assert!(validate_password_strength("SECUREPASS123!").is_err());
-        
+
         // Missing uppercase
         assert!(validate_password_strength("securepass123!").is_err());
-        
+
         // Missing digit
         assert!(validate_password_strength("SecurePass!").is_err());
-        
+
         // Missing special character
         assert!(validate_password_strength("SecurePass123").is_err());
     }
@@ -160,7 +160,7 @@ mod tests {
             password: "SecurePass123!".to_string(),
             profile_picture_url: Some("https://example.com/avatar.jpg".to_string()),
         };
-        
+
         assert!(request.validate().is_ok());
     }
 }

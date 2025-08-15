@@ -7,4 +7,6 @@ pub mod routes;
 
 // Re-export commonly used types
 pub use handlers::AppState;
-pub use routes::create_routes;
+pub use routes::{
+    create_core_routes, create_minimal_routes, create_readonly_routes, create_routes, RouterBuilder,
+};

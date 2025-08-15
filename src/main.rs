@@ -1,7 +1,11 @@
-//! User Service Binary
+//! User Service Development Server
 //!
-//! Standalone HTTP server providing user management API endpoints.
-//! This binary sets up the web server, database connections, and middleware.
+//! This is a simple development server for the user service library.
+//! It provides a basic HTTP server with all API endpoints enabled for
+//! local development and testing purposes.
+//!
+//! For production deployments with custom router configurations, use the
+//! RouterBuilder in your own application or see `examples/production_server.rs`.
 
 use std::env;
 use std::net::SocketAddr;
@@ -9,7 +13,6 @@ use std::sync::Arc;
 
 use axum::Router;
 use dotenv::dotenv;
-use sqlx::postgres::PgPoolOptions;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -23,15 +26,21 @@ use user_service::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load environment variables from .env file
+    // Load environment variables from .env file if present
     dotenv().ok();
 
-    // Initialize logging
+    // Initialize structured logging for development
     let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| DEFAULT_LOG_LEVEL.to_string());
     env::set_var("RUST_LOG", log_level);
     env_logger::init();
 
-    log::info!("Starting User Service v{}", user_service::VERSION);
+    log::info!(
+        "Starting User Service v{} (Development Server)",
+        user_service::VERSION
+    );
+    log::info!(
+        "This is a development server - for production use, see examples/production_server.rs"
+    );
 
     // Database configuration and connection
     let database_config = DatabaseConfig::from_env()
@@ -52,21 +61,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize user service
     let user_service = UserService::new(database_pool.clone());
-    
+
     // Create application state
     let app_state = AppState {
         user_service: Arc::new(user_service),
     };
 
-    // Build the application with middleware
+    // Build the application with all routes enabled for development
+    // Note: This includes all endpoints for easy testing and development
     let app = Router::new()
-        .merge(create_routes())
+        .merge(create_routes()) // All routes enabled for dev convenience
         .layer(
             ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
+                .layer(TraceLayer::new_for_http()) // Request/response logging
                 .layer(
                     CorsLayer::new()
-                        .allow_origin(Any)
+                        .allow_origin(Any) // Permissive CORS for development
                         .allow_methods(Any)
                         .allow_headers(Any),
                 )
@@ -74,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_state(app_state);
 
-    // Server configuration
+    // Server configuration with development defaults
     let host = env::var("HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
     let port = env::var("PORT")
         .unwrap_or_else(|_| DEFAULT_PORT.to_string())
@@ -82,13 +92,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(DEFAULT_PORT);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    log::info!("Server starting on {}:{}", host, port);
+    log::info!("Development server starting on {}:{}", host, port);
+    log::info!("All routes enabled for development and testing");
+    log::info!("Available endpoints:");
+    log::info!("  GET  /health                            - Health check");
+    log::info!("  POST /users                             - Create user");
+    log::info!("  GET  /users/{{id}}                        - Get user");
+    log::info!("  PUT  /users/{{id}}                        - Update user");
+    log::info!("  POST /users/{{id}}/verify-password        - Verify password");
+    log::info!("  PUT  /users/{{id}}/profile-picture        - Update profile picture");
+    log::info!("  DEL  /users/{{id}}/profile-picture        - Remove profile picture");
 
-    // Start the server
+    // Start the development server
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("Failed to bind to address {}: {}", addr, e))?;
 
+    log::info!("Server ready for requests");
     axum::serve(listener, app)
         .await
         .map_err(|e| format!("Server error: {}", e))?;

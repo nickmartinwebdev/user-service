@@ -47,6 +47,7 @@ pub(crate) struct UserWithPassword {
     pub email: String,
 
     /// bcrypt hashed password (never exposed in API)
+    #[allow(dead_code)]
     pub password_hash: String,
 
     /// Optional URL to user's profile picture
@@ -93,10 +94,13 @@ mod tests {
         };
 
         let user: User = user_with_password.into();
-        
+
         // Verify the conversion preserves all fields except password_hash
         assert_eq!(user.name, "Test User");
         assert_eq!(user.email, "test@example.com");
-        assert_eq!(user.profile_picture_url, Some("https://example.com/avatar.jpg".to_string()));
+        assert_eq!(
+            user.profile_picture_url,
+            Some("https://example.com/avatar.jpg".to_string())
+        );
     }
 }

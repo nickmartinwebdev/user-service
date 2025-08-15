@@ -3,9 +3,9 @@
 //! Comprehensive error types and handling for the user service.
 
 use axum::{
-    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
+    Json,
 };
 use serde::Serialize;
 use std::fmt;
