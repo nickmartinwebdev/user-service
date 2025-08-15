@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database
+  database:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: user_service
+      POSTGRES_USER: user_service
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_service -d user_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # User service application
+  user-service:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://user_service:password@database:5432/user_service
+      PORT: 3000
+      HOST: 0.0.0.0
+      LOG_LEVEL: info
+      RUST_LOG: user_service=info
+    ports:
+      - "3000:3000"
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/app/migrations
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  default:
+    name: user-service-network
