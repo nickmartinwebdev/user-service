@@ -35,7 +35,7 @@ pub struct CreateUserRequest {
 }
 
 /// Request payload for updating user profile information
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, Clone)]
 pub struct UpdateUserRequest {
     /// Updated user display name (1-255 characters)
     #[validate(custom(function = "name_validator"))]

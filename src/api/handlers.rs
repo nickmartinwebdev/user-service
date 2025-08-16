@@ -246,7 +246,7 @@ mod tests {
         // Test with boolean
         let bool_response = SuccessResponse::new(true);
         assert!(bool_response.success);
-        assert_eq!(bool_response.data, true);
+        assert!(bool_response.data);
     }
 
     /// Test validation error formatting
@@ -254,6 +254,8 @@ mod tests {
     fn test_validation_error_handling() {
         // This test verifies the error handling function structure
         // In integration tests, we would test with actual validation errors
-        assert!(true); // Placeholder for now
+        // This test verifies the error handling function structure
+        // In integration tests, we would test with actual validation errors
+        // TODO: Add proper validation error testing
     }
 }

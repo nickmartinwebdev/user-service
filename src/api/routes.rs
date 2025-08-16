@@ -374,7 +374,7 @@ mod tests {
     async fn test_health_endpoint_configuration() {
         // Test that health endpoint is properly configured when enabled
         // This would require a full integration test setup
-        assert!(true); // Placeholder
+        // TODO: Add proper health endpoint configuration testing
     }
 
     /// Test that user route configuration works as expected
@@ -382,6 +382,6 @@ mod tests {
     async fn test_user_routes_configuration() {
         // Test that user routes are properly configured based on builder settings
         // This would require a full integration test setup
-        assert!(true); // Placeholder
+        // TODO: Add proper user routes configuration testing
     }
 }

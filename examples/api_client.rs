@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Health check
     println!("Checking service health...");
-    let health_response = client.get(&format!("{}/health", base_url)).send().await?;
+    let health_response = client.get(format!("{}/health", base_url)).send().await?;
 
     if health_response.status().is_success() {
         let health_data: serde_json::Value = health_response.json().await?;
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let create_response = client
-        .post(&format!("{}/users", base_url))
+        .post(format!("{}/users", base_url))
         .json(&user_data)
         .send()
         .await?;
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get the user
     println!("\nRetrieving user...");
     let get_response = client
-        .get(&format!("{}/users/{}", base_url, user_id))
+        .get(format!("{}/users/{}", base_url, user_id))
         .send()
         .await?;
 
@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let update_response = client
-        .put(&format!("{}/users/{}", base_url, user_id))
+        .put(format!("{}/users/{}", base_url, user_id))
         .json(&update_data)
         .send()
         .await?;
@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let verify_response = client
-        .post(&format!("{}/users/{}/verify-password", base_url, user_id))
+        .post(format!("{}/users/{}/verify-password", base_url, user_id))
         .json(&verify_data)
         .send()
         .await?;

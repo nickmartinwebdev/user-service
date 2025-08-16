@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # PostgreSQL database
@@ -15,6 +15,25 @@ services:
       - ./migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user_service -d user_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL test database
+  test-database:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: user_service_test
+      POSTGRES_USER: user_service_test
+      POSTGRES_PASSWORD: test_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - test_postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U user_service_test -d user_service_test"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -44,6 +63,8 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  test_postgres_data:
     driver: local
 
 networks:

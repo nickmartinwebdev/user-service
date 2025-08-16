@@ -24,6 +24,7 @@ sqlx = { version = "0.8.6", features = [
     "uuid",
     "chrono",
     "migrate",
+    "macros",
 ] }
 tokio = { version = "1.47.1", features = ["full"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
@@ -53,6 +54,14 @@ test-helpers = []
 axum-test = "17.2"
 tokio-test = "0.4"
 reqwest = { version = "0.12", features = ["json"] }
+sqlx = { version = "0.8.6", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "migrate",
+    "macros",
+] }
 
 [profile.release]
 opt-level = 3

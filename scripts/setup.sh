@@ -64,16 +64,16 @@ if command -v docker &> /dev/null; then
     if [ "$1" = "--with-db" ]; then
         print_status "Starting PostgreSQL database with Docker..."
         docker-compose up -d database
-        
+
         # Wait for database to be ready
         print_status "Waiting for database to be ready..."
         sleep 10
-        
+
         # Run migrations
         print_status "Running database migrations..."
         export DATABASE_URL="postgresql://user_service:password@localhost:5432/user_service"
         sqlx migrate run
-        
+
         print_status "Database is ready!"
     else
         print_warning "To start the database, run: $0 --with-db"
