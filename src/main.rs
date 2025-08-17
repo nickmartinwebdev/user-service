@@ -21,7 +21,8 @@ use user_service::{
     api::{create_routes, AppState},
     config::*,
     database::DatabaseConfig,
-    service::UserService,
+    service::{JwtService, UserService},
+    JwtConfig,
 };
 
 #[tokio::main]
@@ -59,12 +60,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
 
-    // Initialize user service
+    // JWT configuration
+    let jwt_config =
+        JwtConfig::from_env().map_err(|e| format!("Failed to load JWT configuration: {}", e))?;
+
+    // Initialize services
     let user_service = UserService::new(database_pool.clone());
+    let jwt_service = JwtService::with_expiration(
+        database_pool.clone(),
+        jwt_config.access_secret,
+        jwt_config.refresh_secret,
+        chrono::Duration::hours(jwt_config.access_token_expires_hours),
+        chrono::Duration::days(jwt_config.refresh_token_expires_days),
+    );
 
     // Create application state
     let app_state = AppState {
         user_service: Arc::new(user_service),
+        jwt_service: Arc::new(jwt_service),
     };
 
     // Build the application with all routes enabled for development
@@ -102,6 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("  POST /users/{{id}}/verify-password        - Verify password");
     log::info!("  PUT  /users/{{id}}/profile-picture        - Update profile picture");
     log::info!("  DEL  /users/{{id}}/profile-picture        - Remove profile picture");
+    log::info!("  POST /auth/refresh                      - Refresh JWT tokens");
 
     // Start the development server
     let listener = tokio::net::TcpListener::bind(&addr)

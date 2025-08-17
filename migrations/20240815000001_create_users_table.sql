@@ -2,27 +2,27 @@
 -- This migration sets up the core users table with all necessary fields
 -- for user authentication, profile management, and audit trails.
 
--- Enable UUID extension for generating unique identifiers
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- Enable pgcrypto extension for UUID generation (more widely available)
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Create users table
 CREATE TABLE users (
     -- Primary key using UUID for better distribution and security
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
     -- User profile information
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
-    
+
     -- Authentication
     password_hash VARCHAR(255) NOT NULL,
-    
+
     -- Optional profile features
     profile_picture_url VARCHAR(512),
-    
+
     -- Audit timestamps
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
 -- Create indexes for performance

@@ -10,6 +10,7 @@ A standalone, production-ready user management service built in Rust. This servi
 - **Password Security**: bcrypt password hashing with configurable cost
 - **Email Validation**: RFC-compliant email validation and normalization
 - **Input Validation**: Comprehensive validation with detailed error messages
+- **JWT Authentication**: Complete JWT infrastructure with access and refresh tokens
 
 ### Security & Performance
 - **SQL Injection Prevention**: Prepared statements with SQLx
@@ -82,6 +83,12 @@ The service will be available at `http://localhost:3000`.
 | PUT | `/users/{id}/profile-picture` | Update profile picture |
 | DELETE | `/users/{id}/profile-picture` | Remove profile picture |
 
+### Authentication
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/auth/refresh` | Refresh JWT access token |
+
 ### System
 
 | Method | Endpoint | Description |
@@ -117,6 +124,15 @@ curl -X PUT http://localhost:3000/users/123e4567-e89b-12d3-a456-426614174000 \
   }'
 ```
 
+#### Refresh JWT Token
+```bash
+curl -X POST http://localhost:3000/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "your_refresh_token_here"
+  }'
+```
+
 ## Configuration
 
 ### Environment Variables
@@ -130,6 +146,10 @@ curl -X PUT http://localhost:3000/users/123e4567-e89b-12d3-a456-426614174000 \
 | `DB_MAX_CONNECTIONS` | Maximum database connections | `20` |
 | `DB_MIN_CONNECTIONS` | Minimum database connections | `1` |
 | `BCRYPT_COST` | bcrypt cost factor | `12` |
+| `JWT_ACCESS_SECRET` | JWT access token secret key | Required |
+| `JWT_REFRESH_SECRET` | JWT refresh token secret key | Required |
+| `JWT_ACCESS_EXPIRES_HOURS` | Access token expiration (hours) | `1` |
+| `JWT_REFRESH_EXPIRES_DAYS` | Refresh token expiration (days) | `30` |
 
 ### Docker Deployment
 
@@ -293,7 +313,7 @@ For support and questions:
 
 ## Roadmap
 
-- [ ] JWT authentication integration
+- [x] JWT authentication integration
 - [ ] OAuth2 provider support
 - [ ] User roles and permissions
 - [ ] Email verification workflow

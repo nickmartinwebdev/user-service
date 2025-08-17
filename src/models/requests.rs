@@ -66,6 +66,14 @@ pub struct VerifyPasswordRequest {
     pub password: String,
 }
 
+/// Request payload for refreshing access tokens
+#[derive(Debug, Deserialize, Validate)]
+pub struct RefreshTokenRequest {
+    /// Refresh token to exchange for a new access token
+    #[validate(length(min = 1, message = "Refresh token cannot be empty"))]
+    pub refresh_token: String,
+}
+
 /// Response for user creation
 #[derive(Debug, Serialize)]
 pub struct CreateUserResponse {
@@ -80,6 +88,17 @@ pub struct CreateUserResponse {
 #[derive(Debug, Serialize)]
 pub struct VerifyPasswordResponse {
     pub valid: bool,
+}
+
+/// Response for token refresh operations
+#[derive(Debug, Serialize)]
+pub struct RefreshTokenResponse {
+    /// New access token
+    pub access_token: String,
+    /// Token type (always "Bearer")
+    pub token_type: String,
+    /// Access token expiration time in seconds
+    pub expires_in: i64,
 }
 
 /// Response for health check

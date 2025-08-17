@@ -26,6 +26,14 @@ pub enum AppError {
     #[error("Authentication error: {0}")]
     Authentication(String),
 
+    /// JWT token validation errors
+    #[error("Invalid token: {0}")]
+    InvalidToken(String),
+
+    /// JWT token generation errors
+    #[error("Token generation failed: {0}")]
+    TokenGeneration(String),
+
     /// Resource not found errors
     #[error("Resource not found: {0}")]
     NotFound(String),
@@ -94,6 +102,12 @@ impl IntoResponse for AppError {
             AppError::Authentication(msg) => {
                 (StatusCode::UNAUTHORIZED, "AUTHENTICATION_ERROR", msg)
             }
+            AppError::InvalidToken(msg) => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN", msg),
+            AppError::TokenGeneration(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "TOKEN_GENERATION_ERROR",
+                msg,
+            ),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
             AppError::RateLimit(msg) => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED", msg),
@@ -126,6 +140,12 @@ impl IntoResponse for AppError {
 
 /// Result type alias for operations that can return AppError
 pub type AppResult<T> = Result<T, AppError>;
+
+/// Service-specific error type alias
+pub type ServiceError = AppError;
+
+/// Service-specific result type alias
+pub type ServiceResult<T> = Result<T, ServiceError>;
 
 /// Helper trait for converting other error types to AppError
 pub trait IntoAppError<T> {

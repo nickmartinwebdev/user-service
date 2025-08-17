@@ -139,16 +139,21 @@ pub mod utils;
 // Re-export commonly used types for convenient access
 pub use api::{create_routes, AppState, RouterBuilder};
 pub use models::{
+    auth::{TokenPair, UserContext},
     requests::{
-        CreateUserRequest, UpdateProfilePictureRequest, UpdateUserRequest, VerifyPasswordRequest,
+        CreateUserRequest, RefreshTokenRequest, UpdateProfilePictureRequest, UpdateUserRequest,
+        VerifyPasswordRequest,
     },
     user::User,
 };
-pub use service::UserService;
+pub use service::{JwtService, UserService};
 pub use utils::error::{AppError, AppResult, ErrorResponse};
 
 // Re-export database utilities for configuration
 pub use database::{DatabaseConfig, DatabasePool};
+
+// Re-export JWT configuration
+pub use config::JwtConfig;
 
 /// Library version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -167,4 +172,48 @@ pub mod config {
     /// Default bcrypt cost factor for password hashing
     /// Higher values are more secure but slower
     pub const DEFAULT_BCRYPT_COST: u32 = 12;
+
+    /// Default access token expiration time in hours
+    pub const DEFAULT_ACCESS_TOKEN_EXPIRES_HOURS: i64 = 1;
+
+    /// Default refresh token expiration time in days
+    pub const DEFAULT_REFRESH_TOKEN_EXPIRES_DAYS: i64 = 30;
+
+    /// JWT configuration for authentication
+    #[derive(Debug, Clone)]
+    pub struct JwtConfig {
+        /// Secret key for signing access tokens
+        pub access_secret: String,
+        /// Secret key for signing refresh tokens
+        pub refresh_secret: String,
+        /// Access token expiration time in hours
+        pub access_token_expires_hours: i64,
+        /// Refresh token expiration time in days
+        pub refresh_token_expires_days: i64,
+    }
+
+    impl JwtConfig {
+        /// Create JWT configuration from environment variables
+        pub fn from_env() -> Result<Self, std::env::VarError> {
+            let access_secret = std::env::var("JWT_ACCESS_SECRET")?;
+            let refresh_secret = std::env::var("JWT_REFRESH_SECRET")?;
+
+            let access_token_expires_hours = std::env::var("JWT_ACCESS_EXPIRES_HOURS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_ACCESS_TOKEN_EXPIRES_HOURS);
+
+            let refresh_token_expires_days = std::env::var("JWT_REFRESH_EXPIRES_DAYS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_REFRESH_TOKEN_EXPIRES_DAYS);
+
+            Ok(Self {
+                access_secret,
+                refresh_secret,
+                access_token_expires_hours,
+                refresh_token_expires_days,
+            })
+        }
+    }
 }

@@ -16,7 +16,7 @@ use validator::Validate;
 
 use crate::{
     models::requests::*,
-    service::UserService,
+    service::{JwtService, UserService},
     utils::error::{AppError, AppResult},
     VERSION,
 };
@@ -30,6 +30,8 @@ use crate::{
 pub struct AppState {
     /// User service instance for handling business logic
     pub user_service: Arc<UserService>,
+    /// JWT service instance for authentication
+    pub jwt_service: Arc<JwtService>,
 }
 
 /// Standard success response wrapper for API responses
@@ -215,6 +217,35 @@ pub fn handle_validation_error(err: validator::ValidationErrors) -> AppError {
     }
 
     AppError::Validation(messages.join(", "))
+}
+
+/// Handler for refreshing access tokens using a valid refresh token
+///
+/// This endpoint accepts a refresh token and returns a new access token
+/// if the refresh token is valid and hasn't expired.
+pub async fn refresh_token(
+    State(state): State<AppState>,
+    Json(request): Json<RefreshTokenRequest>,
+) -> AppResult<Json<SuccessResponse<RefreshTokenResponse>>> {
+    // Validate request data
+    request
+        .validate()
+        .map_err(|e| AppError::Validation(format!("Invalid refresh token data: {}", e)))?;
+
+    // Delegate to JWT service for token refresh
+    let token_pair = state
+        .jwt_service
+        .refresh_access_token(&request.refresh_token)
+        .await?;
+
+    // Transform token pair to API response
+    let response = RefreshTokenResponse {
+        access_token: token_pair.access_token,
+        token_type: token_pair.token_type,
+        expires_in: token_pair.expires_in,
+    };
+
+    Ok(Json(SuccessResponse::new(response)))
 }
 
 #[cfg(test)]

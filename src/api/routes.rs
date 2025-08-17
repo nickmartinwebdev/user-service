@@ -35,6 +35,8 @@ pub struct RouterBuilder {
     update_profile_picture: bool,
     /// Whether to enable profile picture removal endpoint (DELETE /users/{id}/profile-picture)
     remove_profile_picture: bool,
+    /// Whether to enable token refresh endpoint (POST /auth/refresh)
+    refresh_token: bool,
 }
 
 impl RouterBuilder {
@@ -61,6 +63,7 @@ impl RouterBuilder {
             verify_password: true,
             update_profile_picture: true,
             remove_profile_picture: true,
+            refresh_token: true,
         }
     }
 
@@ -78,6 +81,7 @@ impl RouterBuilder {
             verify_password: false,
             update_profile_picture: false,
             remove_profile_picture: false,
+            refresh_token: true,
         }
     }
 
@@ -95,6 +99,7 @@ impl RouterBuilder {
             verify_password: true,
             update_profile_picture: false,
             remove_profile_picture: false,
+            refresh_token: false,
         }
     }
 
@@ -111,6 +116,7 @@ impl RouterBuilder {
             verify_password: false,
             update_profile_picture: false,
             remove_profile_picture: false,
+            refresh_token: false,
         }
     }
 
@@ -177,6 +183,15 @@ impl RouterBuilder {
         self
     }
 
+    /// Enables or disables the token refresh endpoint (POST /auth/refresh)
+    ///
+    /// Essential for JWT authentication flows. Allows clients to obtain new
+    /// access tokens using valid refresh tokens.
+    pub fn refresh_token(mut self, enabled: bool) -> Self {
+        self.refresh_token = enabled;
+        self
+    }
+
     /// Builds the Axum router with the configured routes
     ///
     /// Returns a `Router<AppState>` that can be used with Axum. Only the enabled
@@ -214,6 +229,10 @@ impl RouterBuilder {
                 "/users/{id}/profile-picture",
                 delete(remove_profile_picture),
             );
+        }
+
+        if self.refresh_token {
+            router = router.route("/auth/refresh", post(refresh_token));
         }
 
         router
@@ -285,6 +304,7 @@ mod tests {
         assert!(builder.verify_password);
         assert!(builder.update_profile_picture);
         assert!(builder.remove_profile_picture);
+        assert!(builder.refresh_token);
     }
 
     /// Test that with_core_routes() enables only core user management routes
@@ -302,6 +322,8 @@ mod tests {
         assert!(!builder.verify_password);
         assert!(!builder.update_profile_picture);
         assert!(!builder.remove_profile_picture);
+        // Auth routes should be enabled for core functionality
+        assert!(builder.refresh_token);
     }
 
     /// Test that with_readonly_routes() enables only read-only routes
@@ -319,6 +341,7 @@ mod tests {
         assert!(!builder.update_user);
         assert!(!builder.update_profile_picture);
         assert!(!builder.remove_profile_picture);
+        assert!(!builder.refresh_token);
     }
 
     /// Test that with_minimal_routes() enables only health check
@@ -336,6 +359,7 @@ mod tests {
         assert!(!builder.verify_password);
         assert!(!builder.update_profile_picture);
         assert!(!builder.remove_profile_picture);
+        assert!(!builder.refresh_token);
     }
 
     /// Test that individual route configuration methods work correctly
@@ -348,7 +372,8 @@ mod tests {
             .update_user(true)
             .verify_password(false)
             .update_profile_picture(true)
-            .remove_profile_picture(false);
+            .remove_profile_picture(false)
+            .refresh_token(true);
 
         assert!(builder.health_check);
         assert!(builder.create_user);
@@ -357,6 +382,7 @@ mod tests {
         assert!(!builder.verify_password);
         assert!(builder.update_profile_picture);
         assert!(!builder.remove_profile_picture);
+        assert!(builder.refresh_token);
     }
 
     /// Test that convenience functions and backward compatibility work
