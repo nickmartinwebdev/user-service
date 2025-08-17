@@ -105,17 +105,18 @@ impl UserService {
         let password_hash = hash_password_with_cost(&request.password, self.bcrypt_cost)?;
 
         // Insert user into database
-        let user = sqlx::query_as::<_, UserWithPassword>(
+        let user = sqlx::query_as!(
+            UserWithPassword,
             r#"
             INSERT INTO users (name, email, password_hash, profile_picture_url)
             VALUES ($1, $2, $3, $4)
             RETURNING id, name, email, password_hash, profile_picture_url, created_at, updated_at
             "#,
+            request.name,
+            normalized_email,
+            password_hash,
+            request.profile_picture_url as Option<String>
         )
-        .bind(&request.name)
-        .bind(&normalized_email)
-        .bind(&password_hash)
-        .bind(&request.profile_picture_url)
         .fetch_one(&self.db_pool)
         .await
         .map_err(|e| match e {
@@ -147,7 +148,8 @@ impl UserService {
         let normalized_email = request.email.as_ref().map(|email| normalize_email(email));
 
         // Update user in database
-        let user = sqlx::query_as::<_, UserWithPassword>(
+        let user = sqlx::query_as!(
+            UserWithPassword,
             r#"
             UPDATE users
             SET
@@ -158,11 +160,11 @@ impl UserService {
             WHERE id = $1
             RETURNING id, name, email, password_hash, profile_picture_url, created_at, updated_at
             "#,
+            user_id,
+            request.name as Option<String>,
+            normalized_email as Option<String>,
+            request.profile_picture_url as Option<String>
         )
-        .bind(user_id)
-        .bind(&request.name)
-        .bind(&normalized_email)
-        .bind(&request.profile_picture_url)
         .fetch_one(&self.db_pool)
         .await
         .map_err(|e| match e {
@@ -182,14 +184,15 @@ impl UserService {
 
     /// Retrieves a user by their unique ID
     pub async fn get_user_by_id(&self, user_id: Uuid) -> UserServiceResult<User> {
-        let user = sqlx::query_as::<_, UserWithPassword>(
+        let user = sqlx::query_as!(
+            UserWithPassword,
             r#"
             SELECT id, name, email, password_hash, profile_picture_url, created_at, updated_at
             FROM users
             WHERE id = $1
             "#,
+            user_id
         )
-        .bind(user_id)
         .fetch_one(&self.db_pool)
         .await
         .map_err(|e| match e {
@@ -204,14 +207,15 @@ impl UserService {
     pub async fn get_user_by_email(&self, email: &str) -> UserServiceResult<User> {
         let normalized_email = normalize_email(email);
 
-        let user = sqlx::query_as::<_, UserWithPassword>(
+        let user = sqlx::query_as!(
+            UserWithPassword,
             r#"
             SELECT id, name, email, password_hash, profile_picture_url, created_at, updated_at
             FROM users
             WHERE email = $1
             "#,
+            normalized_email
         )
-        .bind(&normalized_email)
         .fetch_one(&self.db_pool)
         .await
         .map_err(|e| match e {
@@ -224,20 +228,13 @@ impl UserService {
 
     /// Verifies a user's password
     pub async fn verify_password(&self, user_id: Uuid, password: &str) -> UserServiceResult<bool> {
-        #[derive(sqlx::FromRow)]
-        struct PasswordRow {
-            password_hash: String,
-        }
-
-        let password_row =
-            sqlx::query_as::<_, PasswordRow>("SELECT password_hash FROM users WHERE id = $1")
-                .bind(user_id)
-                .fetch_one(&self.db_pool)
-                .await
-                .map_err(|e| match e {
-                    sqlx::Error::RowNotFound => UserServiceError::UserNotFound,
-                    _ => UserServiceError::DatabaseError(e),
-                })?;
+        let password_row = sqlx::query!("SELECT password_hash FROM users WHERE id = $1", user_id)
+            .fetch_one(&self.db_pool)
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::RowNotFound => UserServiceError::UserNotFound,
+                _ => UserServiceError::DatabaseError(e),
+            })?;
 
         let is_valid = verify_password(password, &password_row.password_hash)?;
 
@@ -255,16 +252,17 @@ impl UserService {
             UserServiceError::ValidationError(format!("Invalid profile picture data: {}", e))
         })?;
 
-        let user = sqlx::query_as::<_, UserWithPassword>(
+        let user = sqlx::query_as!(
+            UserWithPassword,
             r#"
             UPDATE users
             SET profile_picture_url = $2, updated_at = NOW()
             WHERE id = $1
             RETURNING id, name, email, password_hash, profile_picture_url, created_at, updated_at
             "#,
+            user_id,
+            request.profile_picture_url as Option<String>
         )
-        .bind(user_id)
-        .bind(&request.profile_picture_url)
         .fetch_one(&self.db_pool)
         .await
         .map_err(|e| match e {
@@ -277,15 +275,16 @@ impl UserService {
 
     /// Removes a user's profile picture
     pub async fn remove_profile_picture(&self, user_id: Uuid) -> UserServiceResult<User> {
-        let user = sqlx::query_as::<_, UserWithPassword>(
+        let user = sqlx::query_as!(
+            UserWithPassword,
             r#"
             UPDATE users
             SET profile_picture_url = NULL, updated_at = NOW()
             WHERE id = $1
             RETURNING id, name, email, password_hash, profile_picture_url, created_at, updated_at
             "#,
+            user_id
         )
-        .bind(user_id)
         .fetch_one(&self.db_pool)
         .await
         .map_err(|e| match e {
@@ -298,7 +297,7 @@ impl UserService {
 
     /// Health check for the service
     pub async fn health_check(&self) -> UserServiceResult<()> {
-        sqlx::query("SELECT 1")
+        sqlx::query!("SELECT 1 as health_check")
             .fetch_one(&self.db_pool)
             .await
             .map_err(UserServiceError::DatabaseError)?;

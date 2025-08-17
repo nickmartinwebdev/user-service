@@ -297,13 +297,7 @@ impl JwtService {
 mod tests {
     use super::*;
 
-    fn create_test_service() -> JwtService {
-        use sqlx::PgPool;
-
-        // This would normally use a test database
-        let pool = PgPool::connect_lazy("postgresql://test:test@localhost/test")
-            .expect("Failed to create test pool");
-
+    async fn create_test_service(pool: sqlx::PgPool) -> JwtService {
         JwtService::new(
             pool,
             "test_access_secret_key".to_string(),
@@ -311,9 +305,9 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_token_hash() {
-        let service = create_test_service();
+    #[sqlx::test]
+    async fn test_token_hash(pool: sqlx::PgPool) {
+        let service = create_test_service(pool).await;
         let token = "test_token";
         let hash1 = service.hash_token(token);
         let hash2 = service.hash_token(token);
@@ -326,9 +320,9 @@ mod tests {
         assert_ne!(hash1, different_hash);
     }
 
-    #[test]
-    fn test_access_token_encoding_decoding() {
-        let service = create_test_service();
+    #[sqlx::test]
+    async fn test_access_token_encoding_decoding(pool: sqlx::PgPool) {
+        let service = create_test_service(pool).await;
         let user_id = Uuid::new_v4();
         let now = Utc::now();
         let expires_at = now + Duration::hours(1);
@@ -341,9 +335,9 @@ mod tests {
         assert_eq!(claims.token_type, decoded_claims.token_type);
     }
 
-    #[test]
-    fn test_refresh_token_encoding_decoding() {
-        let service = create_test_service();
+    #[sqlx::test]
+    async fn test_refresh_token_encoding_decoding(pool: sqlx::PgPool) {
+        let service = create_test_service(pool).await;
         let user_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
         let now = Utc::now();
@@ -358,9 +352,9 @@ mod tests {
         assert_eq!(claims.token_type, decoded_claims.token_type);
     }
 
-    #[test]
-    fn test_user_context_from_access_token() {
-        let service = create_test_service();
+    #[sqlx::test]
+    async fn test_user_context_from_access_token(pool: sqlx::PgPool) {
+        let service = create_test_service(pool).await;
         let user_id = Uuid::new_v4();
         let now = Utc::now();
         let expires_at = now + Duration::hours(1);
