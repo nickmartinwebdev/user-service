@@ -248,6 +248,45 @@ pub async fn refresh_token(
     Ok(Json(SuccessResponse::new(response)))
 }
 
+/// Handler for passwordless user signup
+///
+/// This endpoint creates a passwordless user account and sends a verification
+/// email with a 6-digit code. The user must verify their email to complete registration.
+pub async fn passwordless_signup(
+    State(state): State<AppState>,
+    Json(request): Json<PasswordlessSignupRequest>,
+) -> AppResult<Json<SuccessResponse<PasswordlessSignupResponse>>> {
+    // Validate request data
+    request
+        .validate()
+        .map_err(|e| AppError::Validation(format!("Invalid signup data: {}", e)))?;
+
+    // Delegate to user service for passwordless signup
+    let response = state.user_service.passwordless_signup(request).await?;
+
+    Ok(Json(SuccessResponse::new(response)))
+}
+
+/// Handler for email verification
+///
+/// This endpoint verifies the email address using the 6-digit code sent during
+/// passwordless signup. Upon successful verification, it activates the account
+/// and returns authentication tokens.
+pub async fn verify_email(
+    State(state): State<AppState>,
+    Json(request): Json<VerifyEmailRequest>,
+) -> AppResult<Json<SuccessResponse<VerifyEmailResponse>>> {
+    // Validate request data
+    request
+        .validate()
+        .map_err(|e| AppError::Validation(format!("Invalid verification data: {}", e)))?;
+
+    // Delegate to user service for email verification
+    let response = state.user_service.verify_email(request).await?;
+
+    Ok(Json(SuccessResponse::new(response)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

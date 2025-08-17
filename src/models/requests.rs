@@ -109,6 +109,53 @@ pub struct HealthCheckResponse {
     pub version: String,
 }
 
+/// Request payload for passwordless user signup
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct PasswordlessSignupRequest {
+    /// User's display name (1-255 characters)
+    #[validate(custom(function = "name_validator"))]
+    pub name: String,
+
+    /// User's email address (must be unique and valid format)
+    #[validate(custom(function = "email_validator"))]
+    pub email: String,
+}
+
+/// Request payload for email verification
+#[derive(Debug, Deserialize, Validate)]
+pub struct VerifyEmailRequest {
+    /// Email address to verify
+    #[validate(custom(function = "email_validator"))]
+    pub email: String,
+
+    /// 6-digit verification code
+    #[validate(length(
+        min = 6,
+        max = 6,
+        message = "Verification code must be exactly 6 digits"
+    ))]
+    #[validate(custom(function = "crate::utils::validation::verification_code_validator"))]
+    pub verification_code: String,
+}
+
+/// Response for passwordless signup
+#[derive(Debug, Serialize)]
+pub struct PasswordlessSignupResponse {
+    pub message: String,
+    pub user_id: Uuid,
+    pub expires_in: i64,
+}
+
+/// Response for email verification
+#[derive(Debug, Serialize)]
+pub struct VerifyEmailResponse {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_type: String,
+    pub expires_in: i64,
+    pub user: crate::models::User,
+}
+
 /// Standard success response wrapper
 #[derive(Debug, Serialize)]
 pub struct SuccessResponse<T> {
@@ -181,5 +228,33 @@ mod tests {
         };
 
         assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_passwordless_signup_request_validation() {
+        let request = PasswordlessSignupRequest {
+            name: "John Doe".to_string(),
+            email: "john@example.com".to_string(),
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_verify_email_request_validation() {
+        let request = VerifyEmailRequest {
+            email: "john@example.com".to_string(),
+            verification_code: "123456".to_string(),
+        };
+
+        assert!(request.validate().is_ok());
+
+        // Test invalid verification code
+        let invalid_request = VerifyEmailRequest {
+            email: "john@example.com".to_string(),
+            verification_code: "12345".to_string(), // Too short
+        };
+
+        assert!(invalid_request.validate().is_err());
     }
 }

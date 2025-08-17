@@ -46,6 +46,14 @@ pub enum AppError {
     #[error("Rate limit exceeded: {0}")]
     RateLimit(String),
 
+    /// Too many requests error
+    #[error("Too many requests: {0}")]
+    TooManyRequests(String),
+
+    /// Bad request errors
+    #[error("Bad request: {0}")]
+    BadRequest(String),
+
     /// External service errors
     #[error("External service error: {0}")]
     ExternalService(String),
@@ -111,6 +119,10 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
             AppError::RateLimit(msg) => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED", msg),
+            AppError::TooManyRequests(msg) => {
+                (StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_REQUESTS", msg)
+            }
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
             AppError::ExternalService(_) => (
                 StatusCode::BAD_GATEWAY,
                 "EXTERNAL_SERVICE_ERROR",

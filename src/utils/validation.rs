@@ -6,6 +6,9 @@ use regex::Regex;
 use std::sync::OnceLock;
 use validator::ValidationError;
 
+/// Regex pattern for 6-digit verification codes
+pub static VERIFICATION_CODE_REGEX: OnceLock<Regex> = OnceLock::new();
+
 /// Validates email address format using a comprehensive regex pattern
 pub fn validate_email(email: &str) -> bool {
     static EMAIL_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -52,6 +55,14 @@ pub fn validate_url(url: &str) -> bool {
     });
 
     regex.is_match(url) && url.len() <= 512
+}
+
+/// Validates 6-digit verification code format
+pub fn validate_verification_code(code: &str) -> bool {
+    let regex = VERIFICATION_CODE_REGEX
+        .get_or_init(|| Regex::new(r"^\d{6}$").expect("Failed to compile verification code regex"));
+
+    regex.is_match(code)
 }
 
 /// Validates UUID format
@@ -113,6 +124,15 @@ pub fn url_validator(url: &str) -> Result<(), ValidationError> {
     }
 }
 
+/// Custom validator for verification code fields using the validator crate
+pub fn verification_code_validator(code: &str) -> Result<(), ValidationError> {
+    if validate_verification_code(code) {
+        Ok(())
+    } else {
+        Err(ValidationError::new("invalid_verification_code"))
+    }
+}
+
 /// Validation error messages for user-friendly responses
 pub mod messages {
     pub const INVALID_EMAIL: &str = "Please enter a valid email address";
@@ -120,6 +140,7 @@ pub mod messages {
         "Name must contain only letters, spaces, hyphens, and apostrophes";
     pub const INVALID_URL: &str = "Please enter a valid URL starting with http:// or https://";
     pub const INVALID_UUID: &str = "Invalid identifier format";
+    pub const INVALID_VERIFICATION_CODE: &str = "Verification code must be exactly 6 digits";
     pub const FIELD_REQUIRED: &str = "This field is required";
     pub const FIELD_TOO_LONG: &str = "This field is too long";
     pub const FIELD_TOO_SHORT: &str = "This field is too short";
@@ -188,5 +209,17 @@ mod tests {
         assert!(validate_safe_string("Test 123"));
         assert!(!validate_safe_string("Hello <script>"));
         assert!(!validate_safe_string("Test & string"));
+    }
+
+    #[test]
+    fn test_validate_verification_code() {
+        assert!(validate_verification_code("123456"));
+        assert!(validate_verification_code("000000"));
+        assert!(validate_verification_code("999999"));
+        assert!(!validate_verification_code("12345")); // Too short
+        assert!(!validate_verification_code("1234567")); // Too long
+        assert!(!validate_verification_code("12345a")); // Contains letter
+        assert!(!validate_verification_code("")); // Empty
+        assert!(!validate_verification_code("123 456")); // Contains space
     }
 }
