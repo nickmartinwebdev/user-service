@@ -62,6 +62,10 @@ reqwest = { version = "0.12", features = [
     "rustls-tls",
 ], default-features = false }
 url = "2.5"
+webauthn-rs = { version = "0.5", features = [
+    "danger-allow-state-serialisation",
+] }
+webauthn-rs-proto = "0.5"
 
 [features]
 default = []

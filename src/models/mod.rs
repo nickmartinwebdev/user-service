@@ -9,6 +9,7 @@ pub mod login_otp;
 pub mod oauth;
 pub mod requests;
 pub mod user;
+pub mod webauthn;
 
 // Re-export commonly used types
 pub use auth::*;
@@ -17,3 +18,4 @@ pub use login_otp::*;
 pub use oauth::*;
 pub use requests::*;
 pub use user::*;
+pub use webauthn::*;

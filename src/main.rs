@@ -11,18 +11,18 @@ use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::{middleware::from_fn_with_state, routing::get, Router};
+use axum::Router;
 use dotenv::dotenv;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use user_service::{
-    api::{auth_middleware, create_routes, AppState, RouterBuilder},
+    api::{AppState, RouterBuilder},
     config::*,
     database::DatabaseConfig,
     service::{JwtService, OAuthService, UserService},
-    GoogleOAuthConfig, JwtConfig,
+    GoogleOAuthConfig, JwtConfig, WebAuthnConfig, WebAuthnService,
 };
 
 #[tokio::main]
@@ -75,6 +75,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // WebAuthn configuration (optional)
+    let webauthn_config = WebAuthnConfig::from_env().ok();
+    if webauthn_config.is_some() {
+        log::info!("WebAuthn configuration loaded - Passkey endpoints will be available");
+    } else {
+        log::warn!("WebAuthn configuration not found - Using development defaults");
+        log::warn!("Set WEBAUTHN_RP_ID and WEBAUTHN_RP_ORIGIN for production deployment");
+    }
+
     // Initialize services
     let user_service = UserService::new(database_pool.clone());
     let jwt_service = JwtService::with_expiration(
@@ -102,30 +111,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Initialize WebAuthn service if configuration is available
+    let webauthn_service = if let Some(webauthn_config) = webauthn_config {
+        match WebAuthnService::new(database_pool.clone(), webauthn_config, jwt_service.clone()) {
+            Ok(service) => {
+                log::info!("WebAuthn service initialized successfully");
+                Some(Arc::new(service))
+            }
+            Err(e) => {
+                log::error!("Failed to initialize WebAuthn service: {}", e);
+                log::warn!("Passkey endpoints will be disabled");
+                None
+            }
+        }
+    } else {
+        // Use development defaults for WebAuthn
+        log::info!("Using WebAuthn development configuration");
+        match WebAuthnService::new(
+            database_pool.clone(),
+            WebAuthnConfig::default_dev(),
+            jwt_service.clone(),
+        ) {
+            Ok(service) => {
+                log::info!("WebAuthn service initialized with development defaults");
+                Some(Arc::new(service))
+            }
+            Err(e) => {
+                log::error!("Failed to initialize WebAuthn service with defaults: {}", e);
+                log::warn!("Passkey endpoints will be disabled");
+                None
+            }
+        }
+    };
+
     // Create application state
+    // Create application state with all services
     let app_state = AppState {
         user_service: Arc::new(user_service),
         jwt_service: Arc::new(jwt_service),
         oauth_service,
+        webauthn_service,
     };
 
     // Build the application with all routes enabled for development
     // Note: This includes all endpoints for easy testing and development
-    let oauth_protected_routes = Router::new()
-        .route(
-            "/auth/oauth/providers",
-            get(user_service::api::oauth_handlers::get_user_oauth_providers),
-        )
-        .route(
-            "/auth/oauth/providers/{provider}",
-            axum::routing::delete(user_service::api::oauth_handlers::unlink_oauth_provider),
-        )
-        .layer(from_fn_with_state(
-            app_state.jwt_service.clone(),
-            auth_middleware,
-        ));
+    let has_oauth = app_state.oauth_service.is_some();
+    let has_webauthn = app_state.webauthn_service.is_some();
 
     let main_routes = RouterBuilder::new()
+        .with_auth(app_state.jwt_service.clone())
         .health_check(true)
         .create_user(true)
         .get_user(true)
@@ -138,19 +172,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .verify_email(true)
         .signin_otp_request(true)
         .signin_otp_verify(true)
-        .google_oauth_init(true)
-        .google_oauth_callback(true)
+        .google_oauth_init(has_oauth)
+        .google_oauth_callback(has_oauth)
+        .oauth_providers(has_oauth)
+        .oauth_unlink(has_oauth)
+        .passkey_register_begin(has_webauthn)
+        .passkey_register_finish(has_webauthn)
+        .passkey_signin_begin(has_webauthn)
+        .passkey_signin_finish(has_webauthn)
+        .passkey_list(has_webauthn)
+        .passkey_delete(has_webauthn)
+        .passkey_update(has_webauthn)
+        .webauthn_cleanup(has_webauthn)
         .build();
-
-    let has_oauth = app_state.oauth_service.is_some();
 
     let app = Router::new()
         .merge(main_routes)
-        .merge(if has_oauth {
-            oauth_protected_routes
-        } else {
-            Router::new()
-        })
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http()) // Request/response logging
@@ -193,6 +230,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log::info!("  GET  /auth/callback/google              - Google OAuth callback");
         log::info!("  GET  /auth/oauth/providers              - List OAuth providers");
         log::info!("  DEL  /auth/oauth/providers/{{provider}}   - Unlink OAuth provider");
+    }
+
+    if has_webauthn {
+        log::info!("  POST /auth/register/passkey/begin       - Begin passkey registration");
+        log::info!("  POST /auth/register/passkey/finish      - Finish passkey registration");
+        log::info!("  POST /auth/signin/passkey/begin         - Begin passkey authentication");
+        log::info!("  POST /auth/signin/passkey/finish        - Finish passkey authentication");
+        log::info!("  GET  /auth/passkeys                     - List user's passkeys");
+        log::info!("  PUT  /auth/passkeys/{{credential_id}}     - Update passkey name");
+        log::info!("  DEL  /auth/passkeys/{{credential_id}}     - Delete passkey");
+        log::info!("  POST /auth/webauthn/cleanup             - Cleanup expired challenges");
+    }
+
+    // Log authentication methods summary
+    log::info!("Authentication Methods Available:");
+    log::info!("  ✅ Email + OTP (Passwordless)");
+    if has_oauth {
+        log::info!("  ✅ Google OAuth 2.0");
+    } else {
+        log::info!("  ❌ Google OAuth 2.0 (not configured)");
+    }
+    if has_webauthn {
+        log::info!("  ✅ WebAuthn/Passkeys");
+    } else {
+        log::info!("  ❌ WebAuthn/Passkeys (not configured)");
+    }
+
+    log::info!("For production deployment:");
+    if !has_oauth {
+        log::info!("  • Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI for OAuth");
+    }
+    if !has_webauthn {
+        log::info!("  • Set WEBAUTHN_RP_ID and WEBAUTHN_RP_ORIGIN for WebAuthn");
     }
 
     // Start the development server

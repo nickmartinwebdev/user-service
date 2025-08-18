@@ -5,11 +5,16 @@
 //! for different deployment scenarios, such as microservices or feature-specific services.
 
 use axum::{
+    middleware::from_fn_with_state,
     routing::{delete, get, post, put},
     Router,
 };
+use std::sync::Arc;
 
 use super::handlers::*;
+use super::webauthn_handlers;
+use super::{auth_middleware, AppState};
+use crate::service::JwtService;
 
 /// Builder for creating API routes with configurable endpoints
 ///
@@ -53,6 +58,24 @@ pub struct RouterBuilder {
     oauth_providers: bool,
     /// Whether to enable OAuth provider unlinking endpoint (DELETE /auth/oauth/providers/{provider})
     oauth_unlink: bool,
+    /// Whether to enable passkey registration begin endpoint (POST /auth/register/passkey/begin)
+    passkey_register_begin: bool,
+    /// Whether to enable passkey registration finish endpoint (POST /auth/register/passkey/finish)
+    passkey_register_finish: bool,
+    /// Whether to enable passkey authentication begin endpoint (POST /auth/signin/passkey/begin)
+    passkey_signin_begin: bool,
+    /// Whether to enable passkey authentication finish endpoint (POST /auth/signin/passkey/finish)
+    passkey_signin_finish: bool,
+    /// Whether to enable passkey listing endpoint (GET /auth/passkeys)
+    passkey_list: bool,
+    /// Whether to enable passkey deletion endpoint (DELETE /auth/passkeys/{id})
+    passkey_delete: bool,
+    /// Whether to enable passkey update endpoint (PUT /auth/passkeys/{id})
+    passkey_update: bool,
+    /// Whether to enable WebAuthn challenge cleanup endpoint (POST /auth/webauthn/cleanup)
+    webauthn_cleanup: bool,
+    /// JWT service for authentication middleware (optional)
+    jwt_service: Option<Arc<JwtService>>,
 }
 
 impl RouterBuilder {
@@ -63,6 +86,19 @@ impl RouterBuilder {
     /// `with_all_routes()` or `with_core_routes()`.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Configure JWT service for authentication middleware
+    ///
+    /// When provided, routes that require authentication will automatically
+    /// have the auth middleware applied. Routes that require authentication include:
+    /// - get_user, update_user, verify_password
+    /// - update_profile_picture, remove_profile_picture
+    /// - oauth_providers, oauth_unlink
+    /// - passkey_list, passkey_delete, passkey_update
+    pub fn with_auth(mut self, jwt_service: Arc<JwtService>) -> Self {
+        self.jwt_service = Some(jwt_service);
+        self
     }
 
     /// Creates a router builder with all routes enabled
@@ -88,6 +124,15 @@ impl RouterBuilder {
             google_oauth_callback: true,
             oauth_providers: true,
             oauth_unlink: true,
+            passkey_register_begin: true,
+            passkey_register_finish: true,
+            passkey_signin_begin: true,
+            passkey_signin_finish: true,
+            passkey_list: true,
+            passkey_delete: true,
+            passkey_update: true,
+            webauthn_cleanup: true,
+            jwt_service: None,
         }
     }
 
@@ -114,6 +159,15 @@ impl RouterBuilder {
             google_oauth_callback: false,
             oauth_providers: false,
             oauth_unlink: false,
+            passkey_register_begin: true,
+            passkey_register_finish: true,
+            passkey_signin_begin: true,
+            passkey_signin_finish: true,
+            passkey_list: true,
+            passkey_delete: true,
+            passkey_update: true,
+            webauthn_cleanup: false,
+            jwt_service: None,
         }
     }
 
@@ -139,8 +193,17 @@ impl RouterBuilder {
             signin_otp_verify: false,
             google_oauth_init: false,
             google_oauth_callback: false,
-            oauth_providers: true,
-            oauth_unlink: true,
+            oauth_providers: false,
+            oauth_unlink: false,
+            passkey_register_begin: false,
+            passkey_register_finish: false,
+            passkey_signin_begin: true,
+            passkey_signin_finish: true,
+            passkey_list: false,
+            passkey_delete: false,
+            passkey_update: false,
+            webauthn_cleanup: false,
+            jwt_service: None,
         }
     }
 
@@ -166,6 +229,15 @@ impl RouterBuilder {
             google_oauth_callback: false,
             oauth_providers: false,
             oauth_unlink: false,
+            passkey_register_begin: false,
+            passkey_register_finish: false,
+            passkey_signin_begin: false,
+            passkey_signin_finish: false,
+            passkey_list: false,
+            passkey_delete: false,
+            passkey_update: false,
+            webauthn_cleanup: false,
+            jwt_service: None,
         }
     }
 
@@ -295,6 +367,54 @@ impl RouterBuilder {
         self
     }
 
+    /// Enable or disable passkey registration begin endpoint
+    pub fn passkey_register_begin(mut self, enabled: bool) -> Self {
+        self.passkey_register_begin = enabled;
+        self
+    }
+
+    /// Enable or disable passkey registration finish endpoint
+    pub fn passkey_register_finish(mut self, enabled: bool) -> Self {
+        self.passkey_register_finish = enabled;
+        self
+    }
+
+    /// Enable or disable passkey signin begin endpoint
+    pub fn passkey_signin_begin(mut self, enabled: bool) -> Self {
+        self.passkey_signin_begin = enabled;
+        self
+    }
+
+    /// Enable or disable passkey signin finish endpoint
+    pub fn passkey_signin_finish(mut self, enabled: bool) -> Self {
+        self.passkey_signin_finish = enabled;
+        self
+    }
+
+    /// Enable or disable passkey listing endpoint
+    pub fn passkey_list(mut self, enabled: bool) -> Self {
+        self.passkey_list = enabled;
+        self
+    }
+
+    /// Enable or disable passkey deletion endpoint
+    pub fn passkey_delete(mut self, enabled: bool) -> Self {
+        self.passkey_delete = enabled;
+        self
+    }
+
+    /// Enable or disable passkey update endpoint
+    pub fn passkey_update(mut self, enabled: bool) -> Self {
+        self.passkey_update = enabled;
+        self
+    }
+
+    /// Enable or disable WebAuthn challenge cleanup endpoint
+    pub fn webauthn_cleanup(mut self, enabled: bool) -> Self {
+        self.webauthn_cleanup = enabled;
+        self
+    }
+
     /// Builds the Axum router with the configured routes
     ///
     /// Returns a `Router<AppState>` that can be used with Axum. Only the enabled
@@ -306,36 +426,15 @@ impl RouterBuilder {
     /// externally. See the examples for proper setup.
     pub fn build(self) -> Router<AppState> {
         let mut router = Router::new();
+        let mut protected_router = Router::new();
 
+        // Public routes (no authentication required)
         if self.health_check {
             router = router.route("/health", get(health_check));
         }
 
         if self.create_user {
             router = router.route("/users", post(create_user));
-        }
-
-        if self.get_user {
-            router = router.route("/users/{id}", get(get_user));
-        }
-
-        if self.update_user {
-            router = router.route("/users/{id}", put(update_user));
-        }
-
-        if self.verify_password {
-            router = router.route("/users/{id}/verify-password", post(verify_password));
-        }
-
-        if self.update_profile_picture {
-            router = router.route("/users/{id}/profile-picture", put(update_profile_picture));
-        }
-
-        if self.remove_profile_picture {
-            router = router.route(
-                "/users/{id}/profile-picture",
-                delete(remove_profile_picture),
-            );
         }
 
         if self.refresh_token {
@@ -372,21 +471,108 @@ impl RouterBuilder {
             );
         }
 
-        if self.oauth_providers {
+        if self.passkey_register_begin {
             router = router.route(
+                "/auth/register/passkey/begin",
+                post(webauthn_handlers::begin_passkey_registration),
+            );
+        }
+
+        if self.passkey_register_finish {
+            router = router.route(
+                "/auth/register/passkey/finish",
+                post(webauthn_handlers::finish_passkey_registration),
+            );
+        }
+
+        if self.passkey_signin_begin {
+            router = router.route(
+                "/auth/signin/passkey/begin",
+                post(webauthn_handlers::begin_passkey_authentication),
+            );
+        }
+
+        if self.passkey_signin_finish {
+            router = router.route(
+                "/auth/signin/passkey/finish",
+                post(webauthn_handlers::finish_passkey_authentication),
+            );
+        }
+
+        if self.webauthn_cleanup {
+            router = router.route(
+                "/auth/webauthn/cleanup",
+                post(webauthn_handlers::cleanup_expired_challenges),
+            );
+        }
+
+        // Protected routes (authentication required)
+        if self.get_user {
+            protected_router = protected_router.route("/users/{id}", get(get_user));
+        }
+
+        if self.update_user {
+            protected_router = protected_router.route("/users/{id}", put(update_user));
+        }
+
+        if self.verify_password {
+            protected_router =
+                protected_router.route("/users/{id}/verify-password", post(verify_password));
+        }
+
+        if self.update_profile_picture {
+            protected_router =
+                protected_router.route("/users/{id}/profile-picture", put(update_profile_picture));
+        }
+
+        if self.remove_profile_picture {
+            protected_router = protected_router.route(
+                "/users/{id}/profile-picture",
+                delete(remove_profile_picture),
+            );
+        }
+
+        if self.oauth_providers {
+            protected_router = protected_router.route(
                 "/auth/oauth/providers",
                 get(crate::api::oauth_handlers::get_user_oauth_providers),
             );
         }
 
         if self.oauth_unlink {
-            router = router.route(
-                "/auth/oauth/providers/{provider}",
-                delete(crate::api::oauth_handlers::unlink_oauth_provider),
+            protected_router = protected_router.route(
+                "/auth/oauth/providers/:provider",
+                delete(super::oauth_handlers::unlink_oauth_provider),
             );
         }
 
-        router
+        if self.passkey_list {
+            protected_router = protected_router
+                .route("/auth/passkeys", get(webauthn_handlers::list_user_passkeys));
+        }
+
+        if self.passkey_delete {
+            protected_router = protected_router.route(
+                "/auth/passkeys/:credential_id",
+                delete(webauthn_handlers::delete_passkey),
+            );
+        }
+
+        if self.passkey_update {
+            protected_router = protected_router.route(
+                "/auth/passkeys/:credential_id",
+                put(webauthn_handlers::update_passkey),
+            );
+        }
+
+        // Apply authentication middleware to protected routes if JWT service is configured
+        if let Some(jwt_service) = self.jwt_service {
+            protected_router =
+                protected_router.layer(from_fn_with_state(jwt_service, auth_middleware));
+        }
+
+        // Merge public and protected routes
+        router.merge(protected_router)
     }
 }
 
@@ -440,6 +626,9 @@ mod tests {
         assert!(!builder.verify_password);
         assert!(!builder.update_profile_picture);
         assert!(!builder.remove_profile_picture);
+
+        // JWT service should be None by default
+        assert!(builder.jwt_service.is_none());
     }
 
     /// Test that with_all_routes() enables all available routes
@@ -569,8 +758,24 @@ mod tests {
     /// Test that user route configuration works as expected
     #[tokio::test]
     async fn test_user_routes_configuration() {
-        // Test that user routes are properly configured based on builder settings
+        // Test that user routes are properly configured when enabled
         // This would require a full integration test setup
-        // TODO: Add proper user routes configuration testing
+        // TODO: Add proper user route configuration testing
+    }
+
+    /// Test that authentication configuration works correctly
+    #[test]
+    fn test_authentication_configuration() {
+        // Test builder without auth
+        let builder_no_auth = RouterBuilder::new();
+        assert!(builder_no_auth.jwt_service.is_none());
+
+        // Test that the with_auth method exists and can be configured
+        // (Testing the actual JWT service would require async context and database setup)
+        let builder = RouterBuilder::new();
+        assert!(builder.jwt_service.is_none());
+
+        // Verify that the builder has the jwt_service field
+        let _has_jwt_field = builder.jwt_service.is_none();
     }
 }

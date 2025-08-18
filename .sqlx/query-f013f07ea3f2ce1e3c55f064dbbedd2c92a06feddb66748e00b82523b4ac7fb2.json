@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM user_credentials\n                 WHERE user_id = $1 AND credential_name ILIKE $2\n                 ORDER BY created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "credential_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "public_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "sign_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "credential_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "authenticator_data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_used_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "f013f07ea3f2ce1e3c55f064dbbedd2c92a06feddb66748e00b82523b4ac7fb2"
+}

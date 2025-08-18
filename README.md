@@ -99,6 +99,88 @@ The service will be available at `http://localhost:3000`.
 |--------|----------|-------------|
 | GET | `/health` | Health check endpoint |
 
+## Authentication & Route Configuration
+
+The RouterBuilder provides flexible configuration for API routes with automatic authentication middleware. Routes are categorized into public (no authentication required) and protected (authentication required).
+
+### RouterBuilder with Authentication
+
+```rust
+use user_service::{api::{AppState, RouterBuilder}, service::JwtService};
+use std::sync::Arc;
+
+// Create a router with automatic authentication on protected routes
+let router = RouterBuilder::new()
+    .with_auth(jwt_service_arc.clone()) // Configure JWT service for auth middleware
+    .with_all_routes() // Enable all routes
+    .build();
+
+// Or configure specific routes
+let custom_router = RouterBuilder::new()
+    .with_auth(jwt_service_arc.clone())
+    .health_check(true)     // Public route
+    .create_user(true)      // Public route
+    .get_user(true)         // Protected route (auth required)
+    .update_user(true)      // Protected route (auth required)
+    .refresh_token(true)    // Public route
+    .build();
+```
+
+### Route Categories
+
+#### 🔓 Public Routes (No Authentication Required)
+- `GET /health` - Health check
+- `POST /users` - Create new user
+- `POST /auth/refresh` - Refresh JWT tokens
+- `POST /auth/signup/email` - Passwordless signup
+- `POST /auth/verify-email` - Verify email
+- `POST /auth/signin/email` - Request OTP signin
+- `POST /auth/signin/otp` - Verify OTP signin
+- `POST /auth/signup/google` - Google OAuth signup
+- `GET /auth/callback/google` - Google OAuth callback
+- All WebAuthn registration and signin flows
+
+#### 🔒 Protected Routes (Authentication Required)
+- `GET /users/{id}` - Get user details
+- `PUT /users/{id}` - Update user
+- `POST /users/{id}/verify-password` - Verify password
+- `PUT /users/{id}/profile-picture` - Update profile picture
+- `DELETE /users/{id}/profile-picture` - Remove profile picture
+- `GET /auth/oauth/providers` - List OAuth providers
+- `DELETE /auth/oauth/providers/{provider}` - Unlink OAuth provider
+- `GET /auth/passkeys` - List user's passkeys
+- `PUT /auth/passkeys/{credential_id}` - Update passkey
+- `DELETE /auth/passkeys/{credential_id}` - Delete passkey
+
+### Preset Configurations
+
+```rust
+// All routes enabled with authentication
+let full_router = RouterBuilder::new()
+    .with_auth(jwt_service)
+    .with_all_routes()
+    .build();
+
+// Core user management only
+let core_router = RouterBuilder::new()
+    .with_auth(jwt_service)
+    .with_core_routes()
+    .build();
+
+// Read-only routes
+let readonly_router = RouterBuilder::new()
+    .with_auth(jwt_service)
+    .with_readonly_routes()
+    .build();
+
+// Public routes only (no auth middleware)
+let public_router = RouterBuilder::new()
+    .health_check(true)
+    .create_user(true)
+    .refresh_token(true)
+    .build(); // No .with_auth() call
+```
+
 ### Example Requests
 
 #### Create User

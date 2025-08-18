@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM webauthn_challenges\n                 WHERE user_id = $1 AND challenge_type = $2 AND expires_at > NOW()\n                 RETURNING *",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "challenge_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "challenge",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_handle",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "2806131337c878f78e0f33f0f6210ec714765647caf629be2c883916cf94e961"
+}

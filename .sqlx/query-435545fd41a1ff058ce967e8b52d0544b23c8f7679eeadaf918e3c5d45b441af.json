@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT uc.* FROM user_credentials uc\n             JOIN users u ON uc.user_id = u.id\n             WHERE u.email = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "credential_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "public_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "sign_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "credential_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "authenticator_data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_used_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "435545fd41a1ff058ce967e8b52d0544b23c8f7679eeadaf918e3c5d45b441af"
+}

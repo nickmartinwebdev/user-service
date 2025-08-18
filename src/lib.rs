@@ -157,9 +157,19 @@ pub use models::{
         UpdateUserRequest, VerifyEmailRequest, VerifyPasswordRequest,
     },
     user::User,
+    webauthn::{
+        DeletePasskeyRequest, DeletePasskeyResponse, ListPasskeysRequest, ListPasskeysResponse,
+        PasskeyAuthenticationBeginRequest, PasskeyAuthenticationBeginResponse,
+        PasskeyAuthenticationFinishRequest, PasskeyAuthenticationFinishResponse,
+        PasskeyRegistrationBeginRequest, PasskeyRegistrationBeginResponse,
+        PasskeyRegistrationFinishRequest, PasskeyRegistrationFinishResponse, UpdatePasskeyRequest,
+        UpdatePasskeyResponse, UserCredential, WebAuthnConfig,
+    },
     EmailVerification, LoginOtp,
 };
-pub use service::{EmailConfig, EmailService, JwtService, OAuthService, UserService};
+pub use service::{
+    EmailConfig, EmailService, JwtService, OAuthService, UserService, WebAuthnService,
+};
 pub use utils::error::{AppError, AppResult, ErrorResponse};
 
 // Re-export database utilities for configuration

@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM user_credentials WHERE user_id = $1 AND credential_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "credential_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "public_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "sign_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "credential_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "authenticator_data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_used_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "2120ecddccf236264af4f5fc63249268c7166c3cf7903c8f479dede63ab962f7"
+}

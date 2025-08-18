@@ -6,6 +6,7 @@ pub mod handlers;
 pub mod middleware;
 pub mod oauth_handlers;
 pub mod routes;
+pub mod webauthn_handlers;
 
 // Re-export commonly used types
 pub use handlers::AppState;

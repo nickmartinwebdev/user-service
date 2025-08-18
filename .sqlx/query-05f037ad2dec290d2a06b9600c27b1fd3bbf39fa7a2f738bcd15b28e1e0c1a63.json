@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO oauth_states (state_token, expires_at, redirect_url)\n            VALUES ($1, $2, $3)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Timestamptz",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "05f037ad2dec290d2a06b9600c27b1fd3bbf39fa7a2f738bcd15b28e1e0c1a63"
+}
