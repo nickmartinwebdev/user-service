@@ -13,6 +13,8 @@ A standalone, production-ready user management service built in Rust. This servi
 - **JWT Authentication**: Complete JWT infrastructure with access and refresh tokens
 - **OTP Sign-in**: Email-based one-time password authentication for verified users
 - **Passwordless Authentication**: Complete passwordless signup and verification flow
+- **OAuth 2.0 Integration**: Google OAuth authentication with account linking
+- **Social Login**: Seamless integration with external OAuth providers
 
 ### Security & Performance
 - **SQL Injection Prevention**: Prepared statements with SQLx

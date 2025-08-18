@@ -16,6 +16,8 @@ use crate::models::{
     requests::*,
     user::{User, UserWithPassword},
 };
+use crate::service::email_service::EmailServiceError;
+use crate::service::jwt::JwtServiceError;
 use crate::service::{EmailService, JwtService};
 use crate::utils::{
     error::AppError,
@@ -64,7 +66,11 @@ pub enum UserServiceError {
 
     /// Email service error
     #[error("Email service error: {0}")]
-    EmailServiceError(String),
+    EmailServiceError(#[from] EmailServiceError),
+
+    /// JWT service error
+    #[error("JWT service error: {0}")]
+    JwtServiceError(#[from] JwtServiceError),
 
     /// Unexpected internal server error
     #[error("Internal server error")]
@@ -105,9 +111,8 @@ impl From<UserServiceError> for AppError {
             UserServiceError::TooManyAttempts => {
                 AppError::TooManyRequests("Too many verification attempts".to_string())
             }
-            UserServiceError::EmailServiceError(msg) => {
-                AppError::Internal(format!("Email service error: {}", msg))
-            }
+            UserServiceError::EmailServiceError(e) => e.into(),
+            UserServiceError::JwtServiceError(e) => e.into(),
             UserServiceError::InternalError => {
                 AppError::Internal("Internal server error".to_string())
             }
@@ -392,7 +397,9 @@ impl UserService {
             self.email_service
                 .as_ref()
                 .ok_or(UserServiceError::EmailServiceError(
-                    "Email service not configured".to_string(),
+                    EmailServiceError::ConfigurationError(
+                        "Email service not configured".to_string(),
+                    ),
                 ))?;
 
         // Normalize email
@@ -447,8 +454,7 @@ impl UserService {
                 &verification_code,
                 10, // 10 minutes
             )
-            .await
-            .map_err(|e| UserServiceError::EmailServiceError(e.to_string()))?;
+            .await?;
 
         Ok(PasswordlessSignupResponse {
             message: "Verification email sent".to_string(),
@@ -470,15 +476,17 @@ impl UserService {
         let jwt_service = self
             .jwt_service
             .as_ref()
-            .ok_or(UserServiceError::EmailServiceError(
-                "JWT service not configured".to_string(),
+            .ok_or(UserServiceError::JwtServiceError(
+                JwtServiceError::InternalError("JWT service not configured".to_string()),
             ))?;
 
         let email_service =
             self.email_service
                 .as_ref()
                 .ok_or(UserServiceError::EmailServiceError(
-                    "Email service not configured".to_string(),
+                    EmailServiceError::ConfigurationError(
+                        "Email service not configured".to_string(),
+                    ),
                 ))?;
 
         let normalized_email = normalize_email(&request.email);
@@ -613,7 +621,9 @@ impl UserService {
             self.email_service
                 .as_ref()
                 .ok_or(UserServiceError::EmailServiceError(
-                    "Email service not configured".to_string(),
+                    EmailServiceError::ConfigurationError(
+                        "Email service not configured".to_string(),
+                    ),
                 ))?;
 
         let normalized_email = normalize_email(&request.email);
@@ -687,8 +697,7 @@ impl UserService {
         // Send OTP email
         email_service
             .send_signin_otp_email(&user.email, &user.name, &otp_code)
-            .await
-            .map_err(|e| UserServiceError::EmailServiceError(e.to_string()))?;
+            .await?;
 
         Ok(OtpSigninEmailResponse {
             message: "OTP sent to your email".to_string(),
@@ -786,10 +795,7 @@ impl UserService {
         tx.commit().await?;
 
         // Generate JWT tokens
-        let tokens = jwt_service
-            .generate_token_pair(user.id, None, None)
-            .await
-            .map_err(|_| UserServiceError::InternalError)?;
+        let tokens = jwt_service.generate_token_pair(user.id, None, None).await?;
 
         Ok(OtpSigninVerifyResponse {
             access_token: tokens.access_token,
@@ -808,6 +814,33 @@ impl UserService {
             .map_err(UserServiceError::DatabaseError)?;
 
         Ok(())
+    }
+
+    /// Generate JWT tokens for a user (used by OAuth service)
+    ///
+    /// This method generates access and refresh tokens for a user, primarily
+    /// used during OAuth authentication flows.
+    ///
+    /// # Arguments
+    /// * `user` - User object to generate tokens for
+    ///
+    /// # Returns
+    /// * `Result<crate::models::auth::TokenPair, AppError>` - JWT token pair or error
+    pub async fn generate_tokens(
+        &self,
+        user: &User,
+    ) -> UserServiceResult<crate::models::auth::TokenPair> {
+        let jwt_service = self
+            .jwt_service
+            .as_ref()
+            .ok_or(UserServiceError::JwtServiceError(
+                JwtServiceError::InternalError("JWT service not configured".to_string()),
+            ))?;
+
+        jwt_service
+            .generate_token_pair(user.id, None, None)
+            .await
+            .map_err(UserServiceError::JwtServiceError)
     }
 }
 

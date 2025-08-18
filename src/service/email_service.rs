@@ -11,8 +11,75 @@ use lettre::{
 };
 use log::{debug, error, info};
 use tera::{Context, Tera};
+use thiserror::Error;
 
-use crate::utils::error::{AppError, AppResult};
+use crate::utils::error::AppError;
+
+/// Email service specific errors
+#[derive(Error, Debug)]
+pub enum EmailServiceError {
+    /// SMTP configuration error
+    #[error("SMTP configuration error: {0}")]
+    SmtpConfig(String),
+
+    /// Email template error
+    #[error("Email template error: {0}")]
+    TemplateError(String),
+
+    /// Email send failure
+    #[error("Failed to send email: {0}")]
+    SendFailure(String),
+
+    /// Email address parsing error
+    #[error("Invalid email address: {0}")]
+    InvalidEmailAddress(String),
+
+    /// SMTP connection error
+    #[error("SMTP connection error: {0}")]
+    ConnectionError(String),
+
+    /// Template rendering error
+    #[error("Template rendering error: {0}")]
+    RenderError(String),
+
+    /// Configuration error
+    #[error("Configuration error: {0}")]
+    ConfigurationError(String),
+
+    /// Internal error
+    #[error("Internal error: {0}")]
+    InternalError(String),
+}
+
+impl From<EmailServiceError> for AppError {
+    fn from(err: EmailServiceError) -> Self {
+        match err {
+            EmailServiceError::SmtpConfig(msg) => {
+                AppError::Configuration(format!("SMTP configuration error: {}", msg))
+            }
+            EmailServiceError::TemplateError(msg) => {
+                AppError::Internal(format!("Email template error: {}", msg))
+            }
+            EmailServiceError::SendFailure(msg) => {
+                AppError::ExternalService(format!("Failed to send email: {}", msg))
+            }
+            EmailServiceError::InvalidEmailAddress(msg) => {
+                AppError::Validation(format!("Invalid email address: {}", msg))
+            }
+            EmailServiceError::ConnectionError(msg) => {
+                AppError::ExternalService(format!("SMTP connection error: {}", msg))
+            }
+            EmailServiceError::RenderError(msg) => {
+                AppError::Internal(format!("Template rendering error: {}", msg))
+            }
+            EmailServiceError::ConfigurationError(msg) => AppError::Configuration(msg),
+            EmailServiceError::InternalError(msg) => AppError::Internal(msg),
+        }
+    }
+}
+
+/// Result type for email service operations
+pub type EmailServiceResult<T> = Result<T, EmailServiceError>;
 
 /// Email service configuration
 #[derive(Debug, Clone)]
@@ -64,12 +131,14 @@ pub struct EmailService {
 
 impl EmailService {
     /// Create a new email service
-    pub fn new(config: EmailConfig) -> AppResult<Self> {
+    pub fn new(config: EmailConfig) -> EmailServiceResult<Self> {
         // Create SMTP transport
         let creds = Credentials::new(config.smtp_username.clone(), config.smtp_password.clone());
 
         let transport = AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp_host)
-            .map_err(|e| AppError::Configuration(format!("Failed to configure SMTP relay: {}", e)))?
+            .map_err(|e| {
+                EmailServiceError::SmtpConfig(format!("Failed to configure SMTP relay: {}", e))
+            })?
             .port(config.smtp_port)
             .credentials(creds)
             .build();
@@ -91,7 +160,7 @@ impl EmailService {
     }
 
     /// Add embedded email templates
-    fn add_embedded_templates(tera: &mut Tera) -> AppResult<()> {
+    fn add_embedded_templates(tera: &mut Tera) -> EmailServiceResult<()> {
         // Email verification template (HTML)
         let verification_html = r#"
 <!DOCTYPE html>
@@ -156,11 +225,15 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
 © {{ current_year }} {{ app_name }}. All rights reserved.
         "#;
 
-        tera.add_raw_template("verification_email.html", verification_html)
-            .map_err(|e| AppError::Configuration(format!("Failed to add HTML template: {}", e)))?;
+        tera.add_raw_template("verification_email_html", verification_html)
+            .map_err(|e| {
+                EmailServiceError::TemplateError(format!("Failed to add HTML template: {}", e))
+            })?;
 
-        tera.add_raw_template("verification_email.txt", verification_text)
-            .map_err(|e| AppError::Configuration(format!("Failed to add text template: {}", e)))?;
+        tera.add_raw_template("verification_email_text", verification_text)
+            .map_err(|e| {
+                EmailServiceError::TemplateError(format!("Failed to add text template: {}", e))
+            })?;
 
         Ok(())
     }
@@ -172,7 +245,7 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         user_name: &str,
         verification_code: &str,
         expires_in_minutes: i64,
-    ) -> AppResult<()> {
+    ) -> EmailServiceResult<()> {
         info!("Sending verification email to: {}", to_email);
 
         // Prepare template context
@@ -187,24 +260,33 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         // Render templates
         let html_body = self
             .templates
-            .render("verification_email.html", &context)
-            .map_err(|e| AppError::Internal(format!("Failed to render HTML template: {}", e)))?;
+            .render("verification_email_html", &context)
+            .map_err(|e| {
+                EmailServiceError::RenderError(format!("Failed to render HTML template: {}", e))
+            })?;
 
         let text_body = self
             .templates
-            .render("verification_email.txt", &context)
-            .map_err(|e| AppError::Internal(format!("Failed to render text template: {}", e)))?;
+            .render("verification_email_text", &context)
+            .map_err(|e| {
+                EmailServiceError::RenderError(format!("Failed to render text template: {}", e))
+            })?;
 
         // Create message
         let message = Message::builder()
             .from(
                 format!("{} <{}>", self.config.from_name, self.config.from_email)
                     .parse()
-                    .map_err(|e| AppError::Configuration(format!("Invalid from address: {}", e)))?,
+                    .map_err(|e| {
+                        EmailServiceError::InvalidEmailAddress(format!(
+                            "Invalid from address: {}",
+                            e
+                        ))
+                    })?,
             )
-            .to(to_email
-                .parse()
-                .map_err(|e| AppError::BadRequest(format!("Invalid recipient email: {}", e)))?)
+            .to(to_email.parse().map_err(|e| {
+                EmailServiceError::InvalidEmailAddress(format!("Invalid recipient email: {}", e))
+            })?)
             .subject("Verify Your Email Address")
             .multipart(
                 MultiPart::alternative()
@@ -219,7 +301,9 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
                             .body(html_body),
                     ),
             )
-            .map_err(|e| AppError::Internal(format!("Failed to build email message: {}", e)))?;
+            .map_err(|e| {
+                EmailServiceError::InvalidEmailAddress(format!("Failed to build email: {}", e))
+            })?;
 
         // Send email
         match self.transport.send(message).await {
@@ -229,40 +313,56 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
             }
             Err(e) => {
                 error!("Failed to send verification email to {}: {}", to_email, e);
-                Err(AppError::Internal(format!("Failed to send email: {}", e)))
+                Err(EmailServiceError::SendFailure(format!(
+                    "Failed to send email: {}",
+                    e
+                )))
             }
         }
     }
 
     /// Send welcome email after successful verification
-    pub async fn send_welcome_email(&self, to_email: &str, user_name: &str) -> AppResult<()> {
+    pub async fn send_welcome_email(
+        &self,
+        to_email: &str,
+        to_name: &str,
+    ) -> EmailServiceResult<()> {
         info!("Sending welcome email to: {}", to_email);
 
         let html_body = format!(
             r#"
-            <h1>Welcome to {}!</h1>
-            <p>Hello {},</p>
-            <p>Your email has been successfully verified and your account is now active.</p>
-            <p>You can now start using all features of our service.</p>
-            <p>Best regards,<br>The {} Team</p>
-            "#,
-            self.config.from_name, user_name, self.config.from_name
+<html>
+<body>
+    <h2>Welcome to User Service!</h2>
+    <p>Hello {},</p>
+    <p>Your account has been successfully verified and is now active.</p>
+    <p>You can now use all features of our service.</p>
+    <p>Best regards,<br>The User Service Team</p>
+</body>
+</html>
+"#,
+            to_name
         );
 
         let text_body = format!(
-            "Welcome to {}!\n\nHello {},\n\nYour email has been successfully verified and your account is now active.\n\nYou can now start using all features of our service.\n\nBest regards,\nThe {} Team",
-            self.config.from_name, user_name, self.config.from_name
+            "Welcome to User Service!\n\nHello {},\n\nYour account has been successfully verified and is now active.\nYou can now use all features of our service.\n\nBest regards,\nThe User Service Team",
+            to_name
         );
 
         let message = Message::builder()
             .from(
                 format!("{} <{}>", self.config.from_name, self.config.from_email)
                     .parse()
-                    .map_err(|e| AppError::Configuration(format!("Invalid from address: {}", e)))?,
+                    .map_err(|e| {
+                        EmailServiceError::InvalidEmailAddress(format!(
+                            "Invalid from address: {}",
+                            e
+                        ))
+                    })?,
             )
-            .to(to_email
-                .parse()
-                .map_err(|e| AppError::BadRequest(format!("Invalid recipient email: {}", e)))?)
+            .to(to_email.parse().map_err(|e| {
+                EmailServiceError::InvalidEmailAddress(format!("Invalid recipient email: {}", e))
+            })?)
             .subject("Welcome! Your account is now active")
             .multipart(
                 MultiPart::alternative()
@@ -277,7 +377,9 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
                             .body(html_body),
                     ),
             )
-            .map_err(|e| AppError::Internal(format!("Failed to build email message: {}", e)))?;
+            .map_err(|e| {
+                EmailServiceError::InvalidEmailAddress(format!("Failed to build email: {}", e))
+            })?;
 
         match self.transport.send(message).await {
             Ok(_) => {
@@ -286,7 +388,10 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
             }
             Err(e) => {
                 error!("Failed to send welcome email to {}: {}", to_email, e);
-                Err(AppError::Internal(format!("Failed to send email: {}", e)))
+                Err(EmailServiceError::SendFailure(format!(
+                    "Failed to send email: {}",
+                    e
+                )))
             }
         }
     }
@@ -295,13 +400,13 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
     pub async fn send_signin_otp_email(
         &self,
         to_email: &str,
-        user_name: &str,
+        to_name: &str,
         otp_code: &str,
-    ) -> AppResult<()> {
+    ) -> EmailServiceResult<()> {
         info!("Sending sign-in OTP email to: {}", to_email);
 
         let mut context = Context::new();
-        context.insert("user_name", user_name);
+        context.insert("user_name", to_name);
         context.insert("otp_code", otp_code);
         context.insert("app_name", "User Service");
         context.insert("current_year", &chrono::Utc::now().year());
@@ -311,23 +416,29 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         let html_body = self
             .templates
             .render("signin_otp.html", &context)
-            .unwrap_or_else(|_| self.fallback_signin_otp_html(user_name, otp_code));
+            .unwrap_or_else(|_| self.fallback_signin_otp_html(to_name, otp_code));
 
         let text_body = self
             .templates
             .render("signin_otp.txt", &context)
-            .unwrap_or_else(|_| self.fallback_signin_otp_text(user_name, otp_code));
+            .unwrap_or_else(|_| self.fallback_signin_otp_text(to_name, otp_code));
 
         let message = Message::builder()
             .from(
                 format!("{} <{}>", self.config.from_name, self.config.from_email)
                     .parse()
                     .map_err(|e| {
-                        AppError::Internal(format!("Invalid from email address: {}", e))
+                        EmailServiceError::InvalidEmailAddress(format!(
+                            "Invalid from email address: {}",
+                            e
+                        ))
                     })?,
             )
             .to(to_email.parse().map_err(|e| {
-                AppError::BadRequest(format!("Invalid recipient email address: {}", e))
+                EmailServiceError::InvalidEmailAddress(format!(
+                    "Invalid recipient email address: {}",
+                    e
+                ))
             })?)
             .subject("Your Sign-in Code")
             .multipart(
@@ -343,7 +454,9 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
                             .body(html_body),
                     ),
             )
-            .map_err(|e| AppError::Internal(format!("Failed to build email message: {}", e)))?;
+            .map_err(|e| {
+                EmailServiceError::InvalidEmailAddress(format!("Failed to build email: {}", e))
+            })?;
 
         match self.transport.send(message).await {
             Ok(_) => {
@@ -352,7 +465,10 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
             }
             Err(e) => {
                 error!("Failed to send sign-in OTP email to {}: {}", to_email, e);
-                Err(AppError::Internal(format!("Failed to send email: {}", e)))
+                Err(EmailServiceError::SendFailure(format!(
+                    "Failed to send email: {}",
+                    e
+                )))
             }
         }
     }
@@ -366,81 +482,35 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
 <head>
     <meta charset="utf-8">
     <title>Your Sign-in Code</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background-color: #f8f9fa; padding: 20px; text-align: center; border-radius: 5px; }}
-        .content {{ padding: 20px 0; }}
-        .otp-code {{
-            font-size: 24px;
-            font-weight: bold;
-            color: #007bff;
-            background-color: #f8f9fa;
-            padding: 15px;
-            text-align: center;
-            border-radius: 5px;
-            margin: 20px 0;
-            letter-spacing: 3px;
-        }}
-        .warning {{
-            background-color: #fff3cd;
-            border: 1px solid #ffeaa7;
-            padding: 15px;
-            border-radius: 5px;
-            margin: 20px 0;
-        }}
-        .footer {{ font-size: 12px; color: #666; text-align: center; margin-top: 30px; }}
-    </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>Sign-in Code</h1>
-        </div>
-        <div class="content">
-            <p>Hello {user_name},</p>
-            <p>Here's your sign-in code:</p>
-            <div class="otp-code">{otp_code}</div>
-            <p>Enter this code to complete your sign-in. This code will expire in 5 minutes.</p>
-            <div class="warning">
-                <strong>Security Note:</strong> If you didn't request this code, please ignore this email. Never share this code with anyone.
-            </div>
-        </div>
-        <div class="footer">
-            <p>&copy; {} User Service. This is an automated message.</p>
-        </div>
-    </div>
+    <h2>Sign-in Code</h2>
+    <p>Hello {},</p>
+    <p>Here's your sign-in code: <strong>{}</strong></p>
+    <p>Enter this code to complete your sign-in. This code will expire in 5 minutes.</p>
+    <p>If you didn't request this code, please ignore this email.</p>
+    <p>&copy; {} User Service. This is an automated message.</p>
 </body>
 </html>
             "#,
-            chrono::Utc::now().year(),
-            user_name = user_name,
-            otp_code = otp_code
+            user_name,
+            otp_code,
+            chrono::Utc::now().year()
         )
     }
 
     /// Fallback text template for sign-in OTP email
     fn fallback_signin_otp_text(&self, user_name: &str, otp_code: &str) -> String {
         format!(
-            r#"
-Hello {user_name},
-
-Here's your sign-in code: {otp_code}
-
-Enter this code to complete your sign-in. This code will expire in 5 minutes.
-
-SECURITY NOTE: If you didn't request this code, please ignore this email. Never share this code with anyone.
-
-© {} User Service. This is an automated message.
-            "#,
-            chrono::Utc::now().year(),
-            user_name = user_name,
-            otp_code = otp_code
+            "Sign-in Code\n\nHello {},\n\nHere's your sign-in code: {}\n\nEnter this code to complete your sign-in. This code will expire in 5 minutes.\n\nIf you didn't request this code, please ignore this email.\n\n© {} User Service\nThis is an automated message.",
+            user_name,
+            otp_code,
+            chrono::Utc::now().year()
         )
     }
 
     /// Test email configuration by sending a test email
-    pub async fn test_connection(&self) -> AppResult<()> {
+    pub async fn test_connection(&self) -> EmailServiceResult<()> {
         // This is a simple connection test - we could enhance it further
         debug!("Testing email service connection");
 
@@ -486,10 +556,10 @@ mod tests {
         assert!(service
             .templates
             .get_template_names()
-            .any(|name| name == "verification_email.html"));
+            .any(|name| name == "verification_email_html"));
         assert!(service
             .templates
             .get_template_names()
-            .any(|name| name == "verification_email.txt"));
+            .any(|name| name == "verification_email_text"));
     }
 }

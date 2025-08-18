@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod email_verification;
 pub mod login_otp;
+pub mod oauth;
 pub mod requests;
 pub mod user;
 
@@ -13,5 +14,6 @@ pub mod user;
 pub use auth::*;
 pub use email_verification::*;
 pub use login_otp::*;
+pub use oauth::*;
 pub use requests::*;
 pub use user::*;

@@ -46,21 +46,28 @@
 //! ```rust,no_run
 //! use user_service::{
 //!     api::{AppState, RouterBuilder},
-//!     service::UserService,
+//!     service::{UserService, JwtService},
 //!     database::DatabaseConfig,
 //! };
 //! use std::sync::Arc;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Setup database and service
+//!     // Setup database and services
 //!     let config = DatabaseConfig::from_env()?;
 //!     let pool = config.create_pool().await?;
-//!     let user_service = UserService::new(pool);
+//!     let user_service = UserService::new(pool.clone());
+//!     let jwt_service = JwtService::new(
+//!         pool,
+//!         "access_secret".to_string(),
+//!         "refresh_secret".to_string(),
+//!     );
 //!
 //!     // Create application state
 //!     let app_state = AppState {
 //!         user_service: Arc::new(user_service),
+//!         jwt_service: Arc::new(jwt_service),
+//!         oauth_service: None,
 //!     };
 //!
 //!     // Build custom router - only enable needed endpoints
@@ -140,6 +147,10 @@ pub mod utils;
 pub use api::{create_routes, AppState, RouterBuilder};
 pub use models::{
     auth::{TokenPair, UserContext},
+    oauth::{
+        GoogleOAuthCallbackQuery, GoogleOAuthCallbackResponse, GoogleOAuthInitRequest,
+        GoogleOAuthInitResponse, GoogleUserInfo, OAuthProvider, OAuthProviderType, OAuthState,
+    },
     requests::{
         CreateUserRequest, OtpSigninEmailRequest, OtpSigninVerifyRequest,
         PasswordlessSignupRequest, RefreshTokenRequest, UpdateProfilePictureRequest,
@@ -148,14 +159,14 @@ pub use models::{
     user::User,
     EmailVerification, LoginOtp,
 };
-pub use service::{EmailConfig, EmailService, JwtService, UserService};
+pub use service::{EmailConfig, EmailService, JwtService, OAuthService, UserService};
 pub use utils::error::{AppError, AppResult, ErrorResponse};
 
 // Re-export database utilities for configuration
 pub use database::{DatabaseConfig, DatabasePool};
 
-// Re-export JWT configuration
-pub use config::JwtConfig;
+// Re-export JWT and OAuth configurations
+pub use config::{GoogleOAuthConfig, JwtConfig};
 
 /// Library version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -180,6 +191,9 @@ pub mod config {
 
     /// Default refresh token expiration time in days
     pub const DEFAULT_REFRESH_TOKEN_EXPIRES_DAYS: i64 = 30;
+
+    /// Default OAuth state token expiration time in minutes
+    pub const DEFAULT_OAUTH_STATE_EXPIRES_MINUTES: i64 = 10;
 
     /// JWT configuration for authentication
     #[derive(Debug, Clone)]
@@ -215,6 +229,40 @@ pub mod config {
                 refresh_secret,
                 access_token_expires_hours,
                 refresh_token_expires_days,
+            })
+        }
+    }
+
+    /// Google OAuth configuration for authentication
+    #[derive(Debug, Clone)]
+    pub struct GoogleOAuthConfig {
+        /// Google OAuth client ID
+        pub client_id: String,
+        /// Google OAuth client secret
+        pub client_secret: String,
+        /// OAuth redirect URI (callback URL)
+        pub redirect_uri: String,
+        /// OAuth state token expiration time in minutes
+        pub state_expires_minutes: i64,
+    }
+
+    impl GoogleOAuthConfig {
+        /// Create Google OAuth configuration from environment variables
+        pub fn from_env() -> Result<Self, std::env::VarError> {
+            let client_id = std::env::var("GOOGLE_CLIENT_ID")?;
+            let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")?;
+            let redirect_uri = std::env::var("GOOGLE_REDIRECT_URI")?;
+
+            let state_expires_minutes = std::env::var("OAUTH_STATE_EXPIRES_MINUTES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_OAUTH_STATE_EXPIRES_MINUTES);
+
+            Ok(Self {
+                client_id,
+                client_secret,
+                redirect_uri,
+                state_expires_minutes,
             })
         }
     }

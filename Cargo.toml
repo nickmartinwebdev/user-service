@@ -56,6 +56,12 @@ lettre = { version = "0.11", features = [
     "builder",
 ] }
 tera = "1.19"
+oauth2 = "4.4"
+reqwest = { version = "0.12", features = [
+    "json",
+    "rustls-tls",
+], default-features = false }
+url = "2.5"
 
 [features]
 default = []

@@ -4,9 +4,11 @@
 
 pub mod email_service;
 pub mod jwt;
+pub mod oauth_service;
 pub mod user;
 
 // Re-export services
 pub use email_service::{EmailConfig, EmailService};
 pub use jwt::JwtService;
+pub use oauth_service::OAuthService;
 pub use user::UserService;
