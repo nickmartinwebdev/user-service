@@ -4,6 +4,7 @@
 
 pub mod handlers;
 pub mod middleware;
+pub mod oauth_handlers;
 pub mod routes;
 
 // Re-export commonly used types

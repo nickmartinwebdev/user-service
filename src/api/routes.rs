@@ -45,6 +45,14 @@ pub struct RouterBuilder {
     signin_otp_request: bool,
     /// Whether to enable OTP signin verification endpoint (POST /auth/signin/otp)
     signin_otp_verify: bool,
+    /// Whether to enable Google OAuth initiation endpoint (POST /auth/signup/google)
+    google_oauth_init: bool,
+    /// Whether to enable Google OAuth callback endpoint (GET /auth/callback/google)
+    google_oauth_callback: bool,
+    /// Whether to enable OAuth providers listing endpoint (GET /auth/oauth/providers)
+    oauth_providers: bool,
+    /// Whether to enable OAuth provider unlinking endpoint (DELETE /auth/oauth/providers/{provider})
+    oauth_unlink: bool,
 }
 
 impl RouterBuilder {
@@ -76,6 +84,10 @@ impl RouterBuilder {
             verify_email: true,
             signin_otp_request: true,
             signin_otp_verify: true,
+            google_oauth_init: true,
+            google_oauth_callback: true,
+            oauth_providers: true,
+            oauth_unlink: true,
         }
     }
 
@@ -98,6 +110,10 @@ impl RouterBuilder {
             verify_email: true,
             signin_otp_request: true,
             signin_otp_verify: true,
+            google_oauth_init: false,
+            google_oauth_callback: false,
+            oauth_providers: false,
+            oauth_unlink: false,
         }
     }
 
@@ -121,6 +137,10 @@ impl RouterBuilder {
             verify_email: false,
             signin_otp_request: false,
             signin_otp_verify: false,
+            google_oauth_init: false,
+            google_oauth_callback: false,
+            oauth_providers: true,
+            oauth_unlink: true,
         }
     }
 
@@ -142,6 +162,10 @@ impl RouterBuilder {
             verify_email: false,
             signin_otp_request: false,
             signin_otp_verify: false,
+            google_oauth_init: false,
+            google_oauth_callback: false,
+            oauth_providers: false,
+            oauth_unlink: false,
         }
     }
 
@@ -242,8 +266,32 @@ impl RouterBuilder {
     }
 
     /// Enables or disables the OTP signin verification endpoint
-    pub fn signin_otp_verify(mut self, enable: bool) -> Self {
-        self.signin_otp_verify = enable;
+    pub fn signin_otp_verify(mut self, enabled: bool) -> Self {
+        self.signin_otp_verify = enabled;
+        self
+    }
+
+    /// Enable or disable Google OAuth initiation endpoint
+    pub fn google_oauth_init(mut self, enabled: bool) -> Self {
+        self.google_oauth_init = enabled;
+        self
+    }
+
+    /// Enable or disable Google OAuth callback endpoint
+    pub fn google_oauth_callback(mut self, enabled: bool) -> Self {
+        self.google_oauth_callback = enabled;
+        self
+    }
+
+    /// Enable or disable OAuth providers listing endpoint
+    pub fn oauth_providers(mut self, enabled: bool) -> Self {
+        self.oauth_providers = enabled;
+        self
+    }
+
+    /// Enable or disable OAuth provider unlinking endpoint
+    pub fn oauth_unlink(mut self, enabled: bool) -> Self {
+        self.oauth_unlink = enabled;
         self
     }
 
@@ -252,6 +300,10 @@ impl RouterBuilder {
     /// Returns a `Router<AppState>` that can be used with Axum. Only the enabled
     /// routes will be registered, which improves performance and security by
     /// reducing the attack surface.
+    ///
+    /// Note: OAuth endpoints that require authentication (`/auth/oauth/providers` and
+    /// `/auth/oauth/providers/{provider}`) will need authentication middleware applied
+    /// externally. See the examples for proper setup.
     pub fn build(self) -> Router<AppState> {
         let mut router = Router::new();
 
@@ -304,6 +356,34 @@ impl RouterBuilder {
 
         if self.signin_otp_verify {
             router = router.route("/auth/signin/otp", post(verify_signin_otp));
+        }
+
+        if self.google_oauth_init {
+            router = router.route(
+                "/auth/signup/google",
+                post(crate::api::oauth_handlers::initiate_google_oauth),
+            );
+        }
+
+        if self.google_oauth_callback {
+            router = router.route(
+                "/auth/callback/google",
+                get(crate::api::oauth_handlers::handle_google_callback),
+            );
+        }
+
+        if self.oauth_providers {
+            router = router.route(
+                "/auth/oauth/providers",
+                get(crate::api::oauth_handlers::get_user_oauth_providers),
+            );
+        }
+
+        if self.oauth_unlink {
+            router = router.route(
+                "/auth/oauth/providers/{provider}",
+                delete(crate::api::oauth_handlers::unlink_oauth_provider),
+            );
         }
 
         router

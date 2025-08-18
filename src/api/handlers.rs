@@ -32,6 +32,8 @@ pub struct AppState {
     pub user_service: Arc<UserService>,
     /// JWT service instance for authentication
     pub jwt_service: Arc<JwtService>,
+    /// OAuth service instance for OAuth 2.0 authentication
+    pub oauth_service: Option<Arc<crate::service::OAuthService>>,
 }
 
 /// Standard success response wrapper for API responses

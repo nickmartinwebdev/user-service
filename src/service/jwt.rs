@@ -3,14 +3,82 @@
 //! Provides JWT token generation, validation, and session management functionality.
 
 use crate::models::{AccessTokenClaims, AuthSession, RefreshTokenClaims, TokenPair, UserContext};
-use crate::utils::error::{ServiceError, ServiceResult};
+use crate::utils::error::AppError;
 use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use sha2::{Digest, Sha256};
 use sqlx::types::ipnetwork::IpNetwork;
 use sqlx::PgPool;
 use std::str::FromStr;
+use thiserror::Error;
 use uuid::Uuid;
+
+/// JWT service specific errors
+#[derive(Error, Debug)]
+pub enum JwtServiceError {
+    /// JWT token generation failed
+    #[error("Token generation error: {0}")]
+    TokenGeneration(String),
+
+    /// JWT token is invalid or malformed
+    #[error("Invalid token: {0}")]
+    InvalidToken(String),
+
+    /// JWT token has expired
+    #[error("Token expired")]
+    TokenExpired,
+
+    /// Database operation failed
+    #[error("Database error: {0}")]
+    DatabaseError(#[from] sqlx::Error),
+
+    /// Session not found or invalid
+    #[error("Session not found")]
+    SessionNotFound,
+
+    /// Session has expired
+    #[error("Session expired")]
+    SessionExpired,
+
+    /// Invalid session data
+    #[error("Invalid session data: {0}")]
+    InvalidSession(String),
+
+    /// UUID parsing error
+    #[error("Invalid UUID: {0}")]
+    InvalidUuid(#[from] uuid::Error),
+
+    /// Internal error
+    #[error("Internal error: {0}")]
+    InternalError(String),
+}
+
+impl From<JwtServiceError> for AppError {
+    fn from(err: JwtServiceError) -> Self {
+        match err {
+            JwtServiceError::TokenGeneration(msg) => AppError::TokenGeneration(msg),
+            JwtServiceError::InvalidToken(msg) => AppError::InvalidToken(msg),
+            JwtServiceError::TokenExpired => AppError::InvalidToken("Token expired".to_string()),
+            JwtServiceError::DatabaseError(e) => AppError::Database(e),
+            JwtServiceError::SessionNotFound => {
+                AppError::InvalidToken("Session not found".to_string())
+            }
+            JwtServiceError::SessionExpired => {
+                AppError::InvalidToken("Session expired".to_string())
+            }
+            JwtServiceError::InvalidSession(msg) => {
+                AppError::InvalidToken(format!("Invalid session: {}", msg))
+            }
+            JwtServiceError::InvalidUuid(e) => {
+                AppError::InvalidToken(format!("Invalid UUID: {}", e))
+            }
+            JwtServiceError::InternalError(msg) => AppError::Internal(msg),
+        }
+    }
+}
+
+/// Result type for JWT service operations
+pub type JwtServiceResult<T> = Result<T, JwtServiceError>;
 
 /// JWT authentication service for token management and validation
 #[derive(Clone)]
@@ -62,7 +130,7 @@ impl JwtService {
         user_id: Uuid,
         user_agent: Option<String>,
         ip_address: Option<String>,
-    ) -> ServiceResult<TokenPair> {
+    ) -> JwtServiceResult<TokenPair> {
         let now = Utc::now();
         let access_expires_at = now + self.access_token_expires_in;
         let refresh_expires_at = now + self.refresh_token_expires_in;
@@ -95,23 +163,24 @@ impl JwtService {
     }
 
     /// Refresh an access token using a valid refresh token
-    pub async fn refresh_access_token(&self, refresh_token: &str) -> ServiceResult<TokenPair> {
+    pub async fn refresh_access_token(&self, refresh_token: &str) -> JwtServiceResult<TokenPair> {
         // Validate refresh token
         let refresh_claims = self.decode_refresh_token(refresh_token)?;
-        let session_id = Uuid::parse_str(&refresh_claims.session_id)
-            .map_err(|_| ServiceError::InvalidToken("Invalid session ID in token".into()))?;
+        let session_id = Uuid::parse_str(&refresh_claims.session_id)?;
 
         // Verify session exists and is valid
         let session = self.get_session(session_id).await?;
         if session.expires_at <= Utc::now() {
             self.delete_session(session_id).await?;
-            return Err(ServiceError::InvalidToken("Refresh token expired".into()));
+            return Err(JwtServiceError::SessionExpired);
         }
 
         // Verify refresh token hash matches stored hash
         let token_hash = self.hash_token(refresh_token);
         if session.refresh_token_hash != token_hash {
-            return Err(ServiceError::InvalidToken("Invalid refresh token".into()));
+            return Err(JwtServiceError::InvalidToken(
+                "Invalid refresh token".to_string(),
+            ));
         }
 
         // Generate new access token
@@ -131,62 +200,59 @@ impl JwtService {
     }
 
     /// Validate an access token and extract user context
-    pub fn validate_access_token(&self, token: &str) -> ServiceResult<UserContext> {
+    pub fn validate_access_token(&self, token: &str) -> JwtServiceResult<UserContext> {
         let claims = self.decode_access_token(token)?;
         UserContext::from_access_claims(&claims)
-            .map_err(|_| ServiceError::InvalidToken("Invalid user ID in token".into()))
+            .map_err(|_| JwtServiceError::InvalidToken("Invalid user ID in token".to_string()))
     }
 
     /// Revoke a refresh token by deleting its session
-    pub async fn revoke_refresh_token(&self, refresh_token: &str) -> ServiceResult<()> {
+    pub async fn revoke_refresh_token(&self, refresh_token: &str) -> JwtServiceResult<()> {
         let claims = self.decode_refresh_token(refresh_token)?;
-        let session_id = Uuid::parse_str(&claims.session_id)
-            .map_err(|_| ServiceError::InvalidToken("Invalid session ID in token".into()))?;
+        let session_id = Uuid::parse_str(&claims.session_id)?;
 
         self.delete_session(session_id).await?;
         Ok(())
     }
 
     /// Revoke all sessions for a user (logout from all devices)
-    pub async fn revoke_all_user_sessions(&self, user_id: Uuid) -> ServiceResult<()> {
+    pub async fn revoke_all_user_sessions(&self, user_id: Uuid) -> JwtServiceResult<()> {
         sqlx::query!("DELETE FROM auth_sessions WHERE user_id = $1", user_id)
             .execute(&self.pool)
-            .await
-            .map_err(ServiceError::Database)?;
+            .await?;
 
         Ok(())
     }
 
     /// Clean up expired sessions from the database
-    pub async fn cleanup_expired_sessions(&self) -> ServiceResult<u64> {
+    pub async fn cleanup_expired_sessions(&self) -> JwtServiceResult<u64> {
         let result = sqlx::query!("DELETE FROM auth_sessions WHERE expires_at <= NOW()")
             .execute(&self.pool)
-            .await
-            .map_err(ServiceError::Database)?;
+            .await?;
 
         Ok(result.rows_affected())
     }
 
     /// Encode an access token with the given claims
-    fn encode_access_token(&self, claims: &AccessTokenClaims) -> ServiceResult<String> {
+    fn encode_access_token(&self, claims: &AccessTokenClaims) -> JwtServiceResult<String> {
         let header = Header::new(Algorithm::HS256);
         let encoding_key = EncodingKey::from_secret(self.access_secret.as_ref());
 
         encode(&header, claims, &encoding_key)
-            .map_err(|e| ServiceError::TokenGeneration(e.to_string()))
+            .map_err(|e| JwtServiceError::TokenGeneration(e.to_string()))
     }
 
     /// Encode a refresh token with the given claims
-    fn encode_refresh_token(&self, claims: &RefreshTokenClaims) -> ServiceResult<String> {
+    fn encode_refresh_token(&self, claims: &RefreshTokenClaims) -> JwtServiceResult<String> {
         let header = Header::new(Algorithm::HS256);
         let encoding_key = EncodingKey::from_secret(self.refresh_secret.as_ref());
 
         encode(&header, claims, &encoding_key)
-            .map_err(|e| ServiceError::TokenGeneration(e.to_string()))
+            .map_err(|e| JwtServiceError::TokenGeneration(e.to_string()))
     }
 
     /// Decode and validate an access token
-    fn decode_access_token(&self, token: &str) -> ServiceResult<AccessTokenClaims> {
+    fn decode_access_token(&self, token: &str) -> JwtServiceResult<AccessTokenClaims> {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
         validation.validate_aud = false;
@@ -195,11 +261,11 @@ impl JwtService {
 
         decode::<AccessTokenClaims>(token, &decoding_key, &validation)
             .map(|data| data.claims)
-            .map_err(|e| ServiceError::InvalidToken(e.to_string()))
+            .map_err(|e| JwtServiceError::InvalidToken(e.to_string()))
     }
 
     /// Decode and validate a refresh token
-    fn decode_refresh_token(&self, token: &str) -> ServiceResult<RefreshTokenClaims> {
+    fn decode_refresh_token(&self, token: &str) -> JwtServiceResult<RefreshTokenClaims> {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
         validation.validate_aud = false;
@@ -208,7 +274,7 @@ impl JwtService {
 
         decode::<RefreshTokenClaims>(token, &decoding_key, &validation)
             .map(|data| data.claims)
-            .map_err(|e| ServiceError::InvalidToken(e.to_string()))
+            .map_err(|e| JwtServiceError::InvalidToken(e.to_string()))
     }
 
     /// Create a new authentication session in the database
@@ -220,7 +286,7 @@ impl JwtService {
         expires_at: DateTime<Utc>,
         user_agent: Option<String>,
         ip_address: Option<String>,
-    ) -> ServiceResult<()> {
+    ) -> JwtServiceResult<()> {
         let token_hash = self.hash_token(refresh_token);
 
         // Convert IP address string to IpNetwork if provided
@@ -241,46 +307,42 @@ impl JwtService {
             ip_network as Option<IpNetwork>
         )
         .execute(&self.pool)
-        .await
-        .map_err(ServiceError::Database)?;
+        .await?;
 
         Ok(())
     }
 
     /// Get an authentication session by ID
-    async fn get_session(&self, session_id: Uuid) -> ServiceResult<AuthSession> {
+    async fn get_session(&self, session_id: Uuid) -> JwtServiceResult<AuthSession> {
         let session = sqlx::query_as!(
             AuthSession,
             "SELECT id, user_id, refresh_token_hash, expires_at, created_at as \"created_at!\", last_used_at as \"last_used_at!\", user_agent, ip_address FROM auth_sessions WHERE id = $1",
             session_id
         )
         .fetch_optional(&self.pool)
-        .await
-        .map_err(ServiceError::Database)?
-        .ok_or_else(|| ServiceError::InvalidToken("Session not found".into()))?;
+        .await?
+        .ok_or(JwtServiceError::SessionNotFound)?;
 
         Ok(session)
     }
 
     /// Update the last_used_at timestamp for a session
-    async fn update_session_last_used(&self, session_id: Uuid) -> ServiceResult<()> {
+    async fn update_session_last_used(&self, session_id: Uuid) -> JwtServiceResult<()> {
         sqlx::query!(
             "UPDATE auth_sessions SET last_used_at = NOW() WHERE id = $1",
             session_id
         )
         .execute(&self.pool)
-        .await
-        .map_err(ServiceError::Database)?;
+        .await?;
 
         Ok(())
     }
 
     /// Delete an authentication session
-    async fn delete_session(&self, session_id: Uuid) -> ServiceResult<()> {
+    async fn delete_session(&self, session_id: Uuid) -> JwtServiceResult<()> {
         sqlx::query!("DELETE FROM auth_sessions WHERE id = $1", session_id)
             .execute(&self.pool)
-            .await
-            .map_err(ServiceError::Database)?;
+            .await?;
 
         Ok(())
     }
