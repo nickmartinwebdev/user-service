@@ -21,6 +21,9 @@ pub struct User {
     /// User's email address (unique, normalized)
     pub email: String,
 
+    /// Whether the user's email address has been verified
+    pub email_verified: bool,
+
     /// Optional URL to user's profile picture
     pub profile_picture_url: Option<String>,
 
@@ -46,9 +49,11 @@ pub(crate) struct UserWithPassword {
     /// User's email address
     pub email: String,
 
-    /// bcrypt hashed password (never exposed in API)
-    #[allow(dead_code)]
-    pub password_hash: String,
+    /// bcrypt hashed password (optional for passwordless users)
+    pub password_hash: Option<String>,
+
+    /// Whether the user's email address has been verified
+    pub email_verified: bool,
 
     /// Optional URL to user's profile picture
     pub profile_picture_url: Option<String>,
@@ -70,6 +75,7 @@ impl From<UserWithPassword> for User {
             id: user_with_password.id,
             name: user_with_password.name,
             email: user_with_password.email,
+            email_verified: user_with_password.email_verified,
             profile_picture_url: user_with_password.profile_picture_url,
             created_at: user_with_password.created_at,
             updated_at: user_with_password.updated_at,
@@ -87,7 +93,8 @@ mod tests {
             id: Uuid::new_v4(),
             name: "Test User".to_string(),
             email: "test@example.com".to_string(),
-            password_hash: "hashed_password".to_string(),
+            password_hash: Some("hashed_password".to_string()),
+            email_verified: true,
             profile_picture_url: Some("https://example.com/avatar.jpg".to_string()),
             created_at: Utc::now(),
             updated_at: Utc::now(),

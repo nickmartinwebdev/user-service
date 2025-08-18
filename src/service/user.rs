@@ -2,15 +2,20 @@
 //!
 //! Core business logic for user management operations.
 
+use chrono::{Duration, Utc};
+use rand::Rng;
 use sqlx::PgPool;
+use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::models::{
+    email_verification::{EmailVerification, EmailVerificationRow},
     requests::*,
     user::{User, UserWithPassword},
 };
+use crate::service::{EmailService, JwtService};
 use crate::utils::{
     error::AppError,
     security::{hash_password_with_cost, verify_password, DEFAULT_BCRYPT_COST},
@@ -44,6 +49,22 @@ pub enum UserServiceError {
     #[error("Password hashing error: {0}")]
     HashingError(#[from] bcrypt::BcryptError),
 
+    /// Verification code not found or invalid
+    #[error("Invalid verification code")]
+    InvalidVerificationCode,
+
+    /// Verification code has expired
+    #[error("Verification code has expired")]
+    VerificationCodeExpired,
+
+    /// Too many verification attempts
+    #[error("Too many verification attempts")]
+    TooManyAttempts,
+
+    /// Email service error
+    #[error("Email service error: {0}")]
+    EmailServiceError(String),
+
     /// Unexpected internal server error
     #[error("Internal server error")]
     InternalError,
@@ -62,6 +83,18 @@ impl From<UserServiceError> for AppError {
             UserServiceError::ValidationError(msg) => AppError::Validation(msg),
             UserServiceError::DatabaseError(e) => AppError::Database(e),
             UserServiceError::HashingError(e) => AppError::HashingError(e),
+            UserServiceError::InvalidVerificationCode => {
+                AppError::BadRequest("Invalid verification code".to_string())
+            }
+            UserServiceError::VerificationCodeExpired => {
+                AppError::BadRequest("Verification code has expired".to_string())
+            }
+            UserServiceError::TooManyAttempts => {
+                AppError::TooManyRequests("Too many verification attempts".to_string())
+            }
+            UserServiceError::EmailServiceError(msg) => {
+                AppError::Internal(format!("Email service error: {}", msg))
+            }
             UserServiceError::InternalError => {
                 AppError::Internal("Internal server error".to_string())
             }
@@ -80,6 +113,12 @@ pub struct UserService {
 
     /// bcrypt cost factor for password hashing (higher = more secure but slower)
     bcrypt_cost: u32,
+
+    /// Email service for sending verification emails
+    email_service: Option<Arc<EmailService>>,
+
+    /// JWT service for token generation
+    jwt_service: Option<Arc<JwtService>>,
 }
 
 impl UserService {
@@ -88,6 +127,22 @@ impl UserService {
         Self {
             db_pool,
             bcrypt_cost: DEFAULT_BCRYPT_COST,
+            email_service: None,
+            jwt_service: None,
+        }
+    }
+
+    /// Creates a new UserService with email service for passwordless operations
+    pub fn with_email_service(
+        db_pool: PgPool,
+        email_service: Arc<EmailService>,
+        jwt_service: Arc<JwtService>,
+    ) -> Self {
+        Self {
+            db_pool,
+            bcrypt_cost: DEFAULT_BCRYPT_COST,
+            email_service: Some(email_service),
+            jwt_service: Some(jwt_service),
         }
     }
 
@@ -108,14 +163,15 @@ impl UserService {
         let user = sqlx::query_as!(
             UserWithPassword,
             r#"
-            INSERT INTO users (name, email, password_hash, profile_picture_url)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, name, email, password_hash, profile_picture_url, created_at, updated_at
+            INSERT INTO users (name, email, password_hash, profile_picture_url, email_verified)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
             "#,
             request.name,
             normalized_email,
             password_hash,
-            request.profile_picture_url as Option<String>
+            request.profile_picture_url as Option<String>,
+            true // Traditional signup considers email verified
         )
         .fetch_one(&self.db_pool)
         .await
@@ -158,7 +214,7 @@ impl UserService {
                 profile_picture_url = COALESCE($4, profile_picture_url),
                 updated_at = NOW()
             WHERE id = $1
-            RETURNING id, name, email, password_hash, profile_picture_url, created_at, updated_at
+            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
             "#,
             user_id,
             request.name as Option<String>,
@@ -187,7 +243,7 @@ impl UserService {
         let user = sqlx::query_as!(
             UserWithPassword,
             r#"
-            SELECT id, name, email, password_hash, profile_picture_url, created_at, updated_at
+            SELECT id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
             FROM users
             WHERE id = $1
             "#,
@@ -210,7 +266,7 @@ impl UserService {
         let user = sqlx::query_as!(
             UserWithPassword,
             r#"
-            SELECT id, name, email, password_hash, profile_picture_url, created_at, updated_at
+            SELECT id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
             FROM users
             WHERE email = $1
             "#,
@@ -236,9 +292,13 @@ impl UserService {
                 _ => UserServiceError::DatabaseError(e),
             })?;
 
-        let is_valid = verify_password(password, &password_row.password_hash)?;
-
-        Ok(is_valid)
+        if let Some(password_hash) = password_row.password_hash {
+            let is_valid = verify_password(password, &password_hash)?;
+            Ok(is_valid)
+        } else {
+            // User has no password (passwordless account)
+            Ok(false)
+        }
     }
 
     /// Updates a user's profile picture
@@ -258,7 +318,7 @@ impl UserService {
             UPDATE users
             SET profile_picture_url = $2, updated_at = NOW()
             WHERE id = $1
-            RETURNING id, name, email, password_hash, profile_picture_url, created_at, updated_at
+            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
             "#,
             user_id,
             request.profile_picture_url as Option<String>
@@ -281,7 +341,7 @@ impl UserService {
             UPDATE users
             SET profile_picture_url = NULL, updated_at = NOW()
             WHERE id = $1
-            RETURNING id, name, email, password_hash, profile_picture_url, created_at, updated_at
+            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
             "#,
             user_id
         )
@@ -293,6 +353,231 @@ impl UserService {
         })?;
 
         Ok(user.into())
+    }
+
+    /// Creates a passwordless user account and sends verification email
+    pub async fn passwordless_signup(
+        &self,
+        request: PasswordlessSignupRequest,
+    ) -> UserServiceResult<PasswordlessSignupResponse> {
+        // Validate the request
+        request
+            .validate()
+            .map_err(|e| UserServiceError::ValidationError(format!("Invalid user data: {}", e)))?;
+
+        // Check if email service is available
+        let email_service =
+            self.email_service
+                .as_ref()
+                .ok_or(UserServiceError::EmailServiceError(
+                    "Email service not configured".to_string(),
+                ))?;
+
+        // Normalize email
+        let normalized_email = normalize_email(&request.email);
+
+        // Create unverified user account (no password)
+        let user = sqlx::query_as!(
+            UserWithPassword,
+            r#"
+            INSERT INTO users (name, email, password_hash, email_verified)
+            VALUES ($1, $2, NULL, FALSE)
+            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            "#,
+            request.name,
+            normalized_email,
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(db_err) => {
+                if db_err.constraint() == Some("users_email_key") {
+                    UserServiceError::EmailAlreadyExists
+                } else {
+                    UserServiceError::DatabaseError(sqlx::Error::Database(db_err))
+                }
+            }
+            _ => UserServiceError::DatabaseError(e),
+        })?;
+
+        // Generate verification code
+        let verification_code = self.generate_verification_code();
+        let expires_at = Utc::now() + Duration::minutes(10);
+
+        // Store verification code
+        sqlx::query!(
+            r#"
+            INSERT INTO email_verifications (user_id, verification_code, expires_at)
+            VALUES ($1, $2, $3)
+            "#,
+            user.id,
+            verification_code,
+            expires_at
+        )
+        .execute(&self.db_pool)
+        .await?;
+
+        // Send verification email
+        email_service
+            .send_verification_email(
+                &normalized_email,
+                &request.name,
+                &verification_code,
+                10, // 10 minutes
+            )
+            .await
+            .map_err(|e| UserServiceError::EmailServiceError(e.to_string()))?;
+
+        Ok(PasswordlessSignupResponse {
+            message: "Verification email sent".to_string(),
+            user_id: user.id,
+            expires_in: 600, // 10 minutes in seconds
+        })
+    }
+
+    /// Verifies email with code and activates account
+    pub async fn verify_email(
+        &self,
+        request: VerifyEmailRequest,
+    ) -> UserServiceResult<VerifyEmailResponse> {
+        // Validate the request
+        request
+            .validate()
+            .map_err(|e| UserServiceError::ValidationError(format!("Invalid request: {}", e)))?;
+
+        let jwt_service = self
+            .jwt_service
+            .as_ref()
+            .ok_or(UserServiceError::EmailServiceError(
+                "JWT service not configured".to_string(),
+            ))?;
+
+        let email_service =
+            self.email_service
+                .as_ref()
+                .ok_or(UserServiceError::EmailServiceError(
+                    "Email service not configured".to_string(),
+                ))?;
+
+        let normalized_email = normalize_email(&request.email);
+
+        // Get user by email
+        let user = sqlx::query_as!(
+            UserWithPassword,
+            r#"
+            SELECT id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            FROM users
+            WHERE email = $1
+            "#,
+            normalized_email
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => UserServiceError::UserNotFound,
+            _ => UserServiceError::DatabaseError(e),
+        })?;
+
+        // Get verification record
+        let verification_row = sqlx::query_as!(
+            EmailVerificationRow,
+            r#"
+            SELECT id, user_id, verification_code, expires_at, created_at, attempts, verified_at
+            FROM email_verifications
+            WHERE user_id = $1 AND verification_code = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+            user.id,
+            request.verification_code
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => UserServiceError::InvalidVerificationCode,
+            _ => UserServiceError::DatabaseError(e),
+        })?;
+
+        let verification: EmailVerification = verification_row.into();
+
+        // Check if verification is usable
+        if !verification.is_usable(3) {
+            if verification.is_expired() {
+                return Err(UserServiceError::VerificationCodeExpired);
+            }
+            if verification.has_exceeded_max_attempts(3) {
+                return Err(UserServiceError::TooManyAttempts);
+            }
+            if verification.is_verified() {
+                return Err(UserServiceError::InvalidVerificationCode);
+            }
+        }
+
+        // Increment attempt count
+        sqlx::query!(
+            r#"
+            UPDATE email_verifications
+            SET attempts = attempts + 1
+            WHERE id = $1
+            "#,
+            verification.id
+        )
+        .execute(&self.db_pool)
+        .await?;
+
+        // Mark verification as verified and user as email_verified
+        let mut tx = self.db_pool.begin().await?;
+
+        sqlx::query!(
+            r#"
+            UPDATE email_verifications
+            SET verified_at = NOW()
+            WHERE id = $1
+            "#,
+            verification.id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let updated_user = sqlx::query_as!(
+            UserWithPassword,
+            r#"
+            UPDATE users
+            SET email_verified = TRUE, updated_at = NOW()
+            WHERE id = $1
+            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            "#,
+            user.id
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        // Generate tokens
+        let tokens = jwt_service
+            .generate_token_pair(updated_user.id, None, None)
+            .await
+            .map_err(|_| UserServiceError::InternalError)?;
+
+        // Send welcome email
+        let _ = email_service
+            .send_welcome_email(&updated_user.email, &updated_user.name)
+            .await; // Don't fail if welcome email fails
+
+        Ok(VerifyEmailResponse {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            token_type: "Bearer".to_string(),
+            expires_in: 3600, // 1 hour
+            user: updated_user.into(),
+        })
+    }
+
+    /// Generates a 6-digit verification code
+    fn generate_verification_code(&self) -> String {
+        let mut rng = rand::thread_rng();
+        format!("{:06}", rng.gen_range(0..1000000))
     }
 
     /// Health check for the service
@@ -309,6 +594,7 @@ impl UserService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::PasswordlessSignupRequest;
 
     // Note: sqlx::test automatically runs migrations from ./migrations folder
     // No manual migration helper needed!

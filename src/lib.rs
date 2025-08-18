@@ -141,12 +141,13 @@ pub use api::{create_routes, AppState, RouterBuilder};
 pub use models::{
     auth::{TokenPair, UserContext},
     requests::{
-        CreateUserRequest, RefreshTokenRequest, UpdateProfilePictureRequest, UpdateUserRequest,
-        VerifyPasswordRequest,
+        CreateUserRequest, PasswordlessSignupRequest, RefreshTokenRequest,
+        UpdateProfilePictureRequest, UpdateUserRequest, VerifyEmailRequest, VerifyPasswordRequest,
     },
     user::User,
+    EmailVerification,
 };
-pub use service::{JwtService, UserService};
+pub use service::{EmailConfig, EmailService, JwtService, UserService};
 pub use utils::error::{AppError, AppResult, ErrorResponse};
 
 // Re-export database utilities for configuration
