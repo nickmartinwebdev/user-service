@@ -41,6 +41,10 @@ pub struct RouterBuilder {
     passwordless_signup: bool,
     /// Whether to enable email verification endpoint (POST /auth/verify-email)
     verify_email: bool,
+    /// Whether to enable OTP signin email request endpoint (POST /auth/signin/email)
+    signin_otp_request: bool,
+    /// Whether to enable OTP signin verification endpoint (POST /auth/signin/otp)
+    signin_otp_verify: bool,
 }
 
 impl RouterBuilder {
@@ -70,6 +74,8 @@ impl RouterBuilder {
             refresh_token: true,
             passwordless_signup: true,
             verify_email: true,
+            signin_otp_request: true,
+            signin_otp_verify: true,
         }
     }
 
@@ -90,14 +96,17 @@ impl RouterBuilder {
             refresh_token: true,
             passwordless_signup: true,
             verify_email: true,
+            signin_otp_request: true,
+            signin_otp_verify: true,
         }
     }
 
     /// Creates a router builder with read-only routes
+    /// Creates a router with only essential read-only user operations
     ///
-    /// Suitable for authentication services or user directory lookups where
-    /// you need to read user data and verify passwords but not modify users.
-    /// Excludes user creation and modification endpoints.
+    /// Includes health check, user retrieval, and password verification.
+    /// Excludes user creation, updates, and profile picture management.
+    /// Good for authentication services or read-only user directories.
     pub fn with_readonly_routes() -> Self {
         Self {
             health_check: true,
@@ -110,10 +119,12 @@ impl RouterBuilder {
             refresh_token: false,
             passwordless_signup: false,
             verify_email: false,
+            signin_otp_request: false,
+            signin_otp_verify: false,
         }
     }
 
-    /// Creates a router builder with minimal routes (health check only)
+    /// Creates a router with minimal routes for monitoring
     ///
     /// Useful for monitoring services or as a base configuration when you
     /// want to add only specific routes. Only includes the health check endpoint.
@@ -129,6 +140,8 @@ impl RouterBuilder {
             refresh_token: false,
             passwordless_signup: false,
             verify_email: false,
+            signin_otp_request: false,
+            signin_otp_verify: false,
         }
     }
 
@@ -217,8 +230,20 @@ impl RouterBuilder {
     ///
     /// Verifies email addresses using codes sent during passwordless signup.
     /// Returns authentication tokens upon successful verification.
-    pub fn verify_email(mut self, enabled: bool) -> Self {
-        self.verify_email = enabled;
+    pub fn verify_email(mut self, enable: bool) -> Self {
+        self.verify_email = enable;
+        self
+    }
+
+    /// Enables or disables the OTP signin email request endpoint
+    pub fn signin_otp_request(mut self, enable: bool) -> Self {
+        self.signin_otp_request = enable;
+        self
+    }
+
+    /// Enables or disables the OTP signin verification endpoint
+    pub fn signin_otp_verify(mut self, enable: bool) -> Self {
+        self.signin_otp_verify = enable;
         self
     }
 
@@ -271,6 +296,14 @@ impl RouterBuilder {
 
         if self.verify_email {
             router = router.route("/auth/verify-email", post(verify_email));
+        }
+
+        if self.signin_otp_request {
+            router = router.route("/auth/signin/email", post(request_signin_otp));
+        }
+
+        if self.signin_otp_verify {
+            router = router.route("/auth/signin/otp", post(verify_signin_otp));
         }
 
         router

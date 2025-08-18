@@ -291,6 +291,154 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         }
     }
 
+    /// Send OTP code for sign-in
+    pub async fn send_signin_otp_email(
+        &self,
+        to_email: &str,
+        user_name: &str,
+        otp_code: &str,
+    ) -> AppResult<()> {
+        info!("Sending sign-in OTP email to: {}", to_email);
+
+        let mut context = Context::new();
+        context.insert("user_name", user_name);
+        context.insert("otp_code", otp_code);
+        context.insert("app_name", "User Service");
+        context.insert("current_year", &chrono::Utc::now().year());
+        context.insert("expires_minutes", &5); // 5 minute expiration
+
+        // Render email templates
+        let html_body = self
+            .templates
+            .render("signin_otp.html", &context)
+            .unwrap_or_else(|_| self.fallback_signin_otp_html(user_name, otp_code));
+
+        let text_body = self
+            .templates
+            .render("signin_otp.txt", &context)
+            .unwrap_or_else(|_| self.fallback_signin_otp_text(user_name, otp_code));
+
+        let message = Message::builder()
+            .from(
+                format!("{} <{}>", self.config.from_name, self.config.from_email)
+                    .parse()
+                    .map_err(|e| {
+                        AppError::Internal(format!("Invalid from email address: {}", e))
+                    })?,
+            )
+            .to(to_email.parse().map_err(|e| {
+                AppError::BadRequest(format!("Invalid recipient email address: {}", e))
+            })?)
+            .subject("Your Sign-in Code")
+            .multipart(
+                MultiPart::alternative()
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(header::ContentType::TEXT_PLAIN)
+                            .body(text_body),
+                    )
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(header::ContentType::TEXT_HTML)
+                            .body(html_body),
+                    ),
+            )
+            .map_err(|e| AppError::Internal(format!("Failed to build email message: {}", e)))?;
+
+        match self.transport.send(message).await {
+            Ok(_) => {
+                info!("Sign-in OTP email sent successfully to: {}", to_email);
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to send sign-in OTP email to {}: {}", to_email, e);
+                Err(AppError::Internal(format!("Failed to send email: {}", e)))
+            }
+        }
+    }
+
+    /// Fallback HTML template for sign-in OTP email
+    fn fallback_signin_otp_html(&self, user_name: &str, otp_code: &str) -> String {
+        format!(
+            r#"
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Your Sign-in Code</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .header {{ background-color: #f8f9fa; padding: 20px; text-align: center; border-radius: 5px; }}
+        .content {{ padding: 20px 0; }}
+        .otp-code {{
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+            background-color: #f8f9fa;
+            padding: 15px;
+            text-align: center;
+            border-radius: 5px;
+            margin: 20px 0;
+            letter-spacing: 3px;
+        }}
+        .warning {{
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }}
+        .footer {{ font-size: 12px; color: #666; text-align: center; margin-top: 30px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Sign-in Code</h1>
+        </div>
+        <div class="content">
+            <p>Hello {user_name},</p>
+            <p>Here's your sign-in code:</p>
+            <div class="otp-code">{otp_code}</div>
+            <p>Enter this code to complete your sign-in. This code will expire in 5 minutes.</p>
+            <div class="warning">
+                <strong>Security Note:</strong> If you didn't request this code, please ignore this email. Never share this code with anyone.
+            </div>
+        </div>
+        <div class="footer">
+            <p>&copy; {} User Service. This is an automated message.</p>
+        </div>
+    </div>
+</body>
+</html>
+            "#,
+            chrono::Utc::now().year(),
+            user_name = user_name,
+            otp_code = otp_code
+        )
+    }
+
+    /// Fallback text template for sign-in OTP email
+    fn fallback_signin_otp_text(&self, user_name: &str, otp_code: &str) -> String {
+        format!(
+            r#"
+Hello {user_name},
+
+Here's your sign-in code: {otp_code}
+
+Enter this code to complete your sign-in. This code will expire in 5 minutes.
+
+SECURITY NOTE: If you didn't request this code, please ignore this email. Never share this code with anyone.
+
+© {} User Service. This is an automated message.
+            "#,
+            chrono::Utc::now().year(),
+            user_name = user_name,
+            otp_code = otp_code
+        )
+    }
+
     /// Test email configuration by sending a test email
     pub async fn test_connection(&self) -> AppResult<()> {
         // This is a simple connection test - we could enhance it further

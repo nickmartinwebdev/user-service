@@ -11,6 +11,8 @@ A standalone, production-ready user management service built in Rust. This servi
 - **Email Validation**: RFC-compliant email validation and normalization
 - **Input Validation**: Comprehensive validation with detailed error messages
 - **JWT Authentication**: Complete JWT infrastructure with access and refresh tokens
+- **OTP Sign-in**: Email-based one-time password authentication for verified users
+- **Passwordless Authentication**: Complete passwordless signup and verification flow
 
 ### Security & Performance
 - **SQL Injection Prevention**: Prepared statements with SQLx
