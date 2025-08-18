@@ -149,7 +149,25 @@ pub struct UserService {
 }
 
 impl UserService {
-    /// Creates a new UserService instance with the provided database connection pool
+    /// Creates a new UserService instance with default configuration
+    ///
+    /// This constructor creates a basic UserService with only database connectivity.
+    /// For passwordless authentication features, use [`UserService::with_email_service`] instead.
+    ///
+    /// # Arguments
+    /// * `db_pool` - PostgreSQL connection pool for database operations
+    ///
+    /// # Returns
+    /// A new UserService instance with default bcrypt cost and no email/JWT services
+    ///
+    /// # Examples
+    /// ```
+    /// use sqlx::PgPool;
+    /// use user_service::service::UserService;
+    ///
+    /// let pool = PgPool::connect("postgresql://...").await?;
+    /// let user_service = UserService::new(pool);
+    /// ```
     pub fn new(db_pool: PgPool) -> Self {
         Self {
             db_pool,
@@ -159,7 +177,30 @@ impl UserService {
         }
     }
 
-    /// Creates a new UserService with email service for passwordless operations
+    /// Creates a new UserService with email and JWT services for advanced features
+    ///
+    /// This constructor enables passwordless authentication, email verification,
+    /// and JWT token generation capabilities.
+    ///
+    /// # Arguments
+    /// * `db_pool` - PostgreSQL connection pool for database operations
+    /// * `email_service` - Email service for sending verification and OTP emails
+    /// * `jwt_service` - JWT service for token generation and validation
+    ///
+    /// # Returns
+    /// A fully-configured UserService instance with all authentication features enabled
+    ///
+    /// # Examples
+    /// ```
+    /// use std::sync::Arc;
+    /// use sqlx::PgPool;
+    /// use user_service::service::{UserService, EmailService, JwtService};
+    ///
+    /// let pool = PgPool::connect("postgresql://...").await?;
+    /// let email_service = Arc::new(EmailService::new(email_config));
+    /// let jwt_service = Arc::new(JwtService::new(jwt_config));
+    /// let user_service = UserService::with_email_service(pool, email_service, jwt_service);
+    /// ```
     pub fn with_email_service(
         db_pool: PgPool,
         email_service: Arc<EmailService>,
@@ -173,7 +214,40 @@ impl UserService {
         }
     }
 
-    /// Creates a new user account with the provided information
+    /// Creates a new user account with password-based authentication
+    ///
+    /// Validates the request data, normalizes the email address, hashes the password
+    /// with bcrypt, and stores the user in the database. The email is automatically
+    /// marked as verified for traditional signup flows.
+    ///
+    /// # Arguments
+    /// * `request` - User creation request containing name, email, password, and optional profile picture
+    ///
+    /// # Returns
+    /// * `Ok(User)` - The created user object (password hash excluded)
+    /// * `Err(UserServiceError)` - Validation, database, or hashing errors
+    ///
+    /// # Errors
+    /// * `ValidationError` - Invalid input data (email format, password strength, etc.)
+    /// * `EmailAlreadyExists` - Email address is already registered
+    /// * `HashingError` - Password hashing failed
+    /// * `DatabaseError` - Database operation failed
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::models::requests::CreateUserRequest;
+    /// use user_service::service::UserService;
+    ///
+    /// let request = CreateUserRequest {
+    ///     name: "John Doe".to_string(),
+    ///     email: "john@example.com".to_string(),
+    ///     password: "SecurePassword123!".to_string(),
+    ///     profile_picture_url: None,
+    /// };
+    ///
+    /// let user = user_service.create_user(request).await?;
+    /// println!("Created user with ID: {}", user.id);
+    /// ```
     pub async fn create_user(&self, request: CreateUserRequest) -> UserServiceResult<User> {
         // Validate the request
         request
@@ -217,6 +291,39 @@ impl UserService {
     }
 
     /// Updates an existing user's profile information
+    ///
+    /// Allows partial updates of user data including name, email, and profile picture.
+    /// Only provided fields are updated; omitted fields remain unchanged.
+    /// Email addresses are automatically normalized before storage.
+    ///
+    /// # Arguments
+    /// * `user_id` - Unique identifier of the user to update
+    /// * `request` - Update request containing optional new values
+    ///
+    /// # Returns
+    /// * `Ok(User)` - The updated user object
+    /// * `Err(UserServiceError)` - Validation, database, or constraint errors
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided ID
+    /// * `ValidationError` - Invalid input data
+    /// * `EmailAlreadyExists` - New email address is already registered
+    /// * `DatabaseError` - Database operation failed
+    ///
+    /// # Examples
+    /// ```
+    /// use uuid::Uuid;
+    /// use user_service::models::requests::UpdateUserRequest;
+    ///
+    /// let user_id = Uuid::parse_str("...")?;
+    /// let request = UpdateUserRequest {
+    ///     name: Some("Jane Doe".to_string()),
+    ///     email: None, // Keep existing email
+    ///     profile_picture_url: Some(Some("https://example.com/new-avatar.jpg".to_string())),
+    /// };
+    ///
+    /// let updated_user = user_service.update_user(user_id, request).await?;
+    /// ```
     pub async fn update_user(
         &self,
         user_id: Uuid,
@@ -265,7 +372,30 @@ impl UserService {
         Ok(user.into())
     }
 
-    /// Retrieves a user by their unique ID
+    /// Retrieves a user by their unique identifier
+    ///
+    /// Looks up a user record by UUID. The returned user object excludes
+    /// sensitive information like password hashes.
+    ///
+    /// # Arguments
+    /// * `user_id` - Unique identifier of the user to retrieve
+    ///
+    /// # Returns
+    /// * `Ok(User)` - The user object if found
+    /// * `Err(UserServiceError)` - User not found or database error
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided ID
+    /// * `DatabaseError` - Database query failed
+    ///
+    /// # Examples
+    /// ```
+    /// use uuid::Uuid;
+    ///
+    /// let user_id = Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000")?;
+    /// let user = user_service.get_user_by_id(user_id).await?;
+    /// println!("Found user: {}", user.name);
+    /// ```
     pub async fn get_user_by_id(&self, user_id: Uuid) -> UserServiceResult<User> {
         let user = sqlx::query_as!(
             UserWithPassword,
@@ -287,6 +417,27 @@ impl UserService {
     }
 
     /// Retrieves a user by their email address
+    ///
+    /// Performs a case-insensitive lookup after normalizing the email address.
+    /// The returned user object excludes sensitive information like password hashes.
+    ///
+    /// # Arguments
+    /// * `email` - Email address to search for (will be normalized)
+    ///
+    /// # Returns
+    /// * `Ok(User)` - The user object if found
+    /// * `Err(UserServiceError)` - User not found or database error
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided email
+    /// * `DatabaseError` - Database query failed
+    ///
+    /// # Examples
+    /// ```
+    /// let user = user_service.get_user_by_email("john@EXAMPLE.com").await?;
+    /// // Finds user even with different casing
+    /// assert_eq!(user.email, "john@example.com");
+    /// ```
     pub async fn get_user_by_email(&self, email: &str) -> UserServiceResult<User> {
         let normalized_email = normalize_email(email);
 
@@ -309,7 +460,39 @@ impl UserService {
         Ok(user.into())
     }
 
-    /// Verifies a user's password
+    /// Verifies a user's password against their stored hash
+    ///
+    /// Securely compares the provided plaintext password with the stored bcrypt hash.
+    /// Returns false for passwordless accounts (users created via passwordless signup).
+    ///
+    /// # Arguments
+    /// * `user_id` - Unique identifier of the user
+    /// * `password` - Plaintext password to verify
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Password is correct
+    /// * `Ok(false)` - Password is incorrect or user has no password
+    /// * `Err(UserServiceError)` - User not found or verification error
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided ID
+    /// * `HashingError` - Password verification failed
+    /// * `DatabaseError` - Database query failed
+    ///
+    /// # Security Notes
+    /// This method uses constant-time comparison to prevent timing attacks.
+    /// Passwordless accounts always return false for security.
+    ///
+    /// # Examples
+    /// ```
+    /// use uuid::Uuid;
+    ///
+    /// let user_id = Uuid::parse_str("...")?;
+    /// let is_valid = user_service.verify_password(user_id, "user_password").await?;
+    /// if is_valid {
+    ///     println!("Password is correct");
+    /// }
+    /// ```
     pub async fn verify_password(&self, user_id: Uuid, password: &str) -> UserServiceResult<bool> {
         let password_row = sqlx::query!("SELECT password_hash FROM users WHERE id = $1", user_id)
             .fetch_one(&self.db_pool)
@@ -328,7 +511,36 @@ impl UserService {
         }
     }
 
-    /// Updates a user's profile picture
+    /// Updates a user's profile picture URL
+    ///
+    /// Sets or updates the profile picture URL for a user. The URL is validated
+    /// during request validation. Setting to None removes the profile picture.
+    ///
+    /// # Arguments
+    /// * `user_id` - Unique identifier of the user
+    /// * `request` - Request containing the new profile picture URL (or None to remove)
+    ///
+    /// # Returns
+    /// * `Ok(User)` - The updated user object
+    /// * `Err(UserServiceError)` - Validation, user not found, or database error
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided ID
+    /// * `ValidationError` - Invalid URL format
+    /// * `DatabaseError` - Database update failed
+    ///
+    /// # Examples
+    /// ```
+    /// use uuid::Uuid;
+    /// use user_service::models::requests::UpdateProfilePictureRequest;
+    ///
+    /// let user_id = Uuid::parse_str("...")?;
+    /// let request = UpdateProfilePictureRequest {
+    ///     profile_picture_url: Some("https://example.com/avatar.jpg".to_string()),
+    /// };
+    ///
+    /// let updated_user = user_service.update_profile_picture(user_id, request).await?;
+    /// ```
     pub async fn update_profile_picture(
         &self,
         user_id: Uuid,
@@ -361,6 +573,29 @@ impl UserService {
     }
 
     /// Removes a user's profile picture
+    ///
+    /// Sets the profile picture URL to NULL, effectively removing the profile picture.
+    /// This operation is idempotent - removing an already-absent picture succeeds.
+    ///
+    /// # Arguments
+    /// * `user_id` - Unique identifier of the user
+    ///
+    /// # Returns
+    /// * `Ok(User)` - The updated user object with no profile picture
+    /// * `Err(UserServiceError)` - User not found or database error
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided ID
+    /// * `DatabaseError` - Database update failed
+    ///
+    /// # Examples
+    /// ```
+    /// use uuid::Uuid;
+    ///
+    /// let user_id = Uuid::parse_str("...")?;
+    /// let user = user_service.remove_profile_picture(user_id).await?;
+    /// assert!(user.profile_picture_url.is_none());
+    /// ```
     pub async fn remove_profile_picture(&self, user_id: Uuid) -> UserServiceResult<User> {
         let user = sqlx::query_as!(
             UserWithPassword,
@@ -382,7 +617,44 @@ impl UserService {
         Ok(user.into())
     }
 
-    /// Creates a passwordless user account and sends verification email
+    /// Creates a passwordless user account and initiates email verification
+    ///
+    /// Creates an unverified user account without a password and sends a verification
+    /// email with a time-limited code. This is part of the passwordless authentication flow.
+    /// Requires email service to be configured.
+    ///
+    /// # Arguments
+    /// * `request` - Signup request containing name and email
+    ///
+    /// # Returns
+    /// * `Ok(PasswordlessSignupResponse)` - Confirmation with user ID and expiration info
+    /// * `Err(UserServiceError)` - Validation, email service, or database error
+    ///
+    /// # Errors
+    /// * `ValidationError` - Invalid input data
+    /// * `EmailAlreadyExists` - Email address is already registered
+    /// * `EmailServiceError` - Email service not configured or sending failed
+    /// * `DatabaseError` - Database operation failed
+    ///
+    /// # Flow
+    /// 1. Validates request data
+    /// 2. Creates unverified user account (no password, email_verified=false)
+    /// 3. Generates 6-digit verification code with 10-minute expiration
+    /// 4. Stores verification code in database
+    /// 5. Sends verification email
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::models::requests::PasswordlessSignupRequest;
+    ///
+    /// let request = PasswordlessSignupRequest {
+    ///     name: "Jane Doe".to_string(),
+    ///     email: "jane@example.com".to_string(),
+    /// };
+    ///
+    /// let response = user_service.passwordless_signup(request).await?;
+    /// println!("Verification email sent, expires in {} seconds", response.expires_in);
+    /// ```
     pub async fn passwordless_signup(
         &self,
         request: PasswordlessSignupRequest,
@@ -463,7 +735,46 @@ impl UserService {
         })
     }
 
-    /// Verifies email with code and activates account
+    /// Verifies email address and completes passwordless account activation
+    ///
+    /// Validates the verification code, marks the user's email as verified,
+    /// generates JWT tokens, and sends a welcome email. This completes the
+    /// passwordless signup flow.
+    ///
+    /// # Arguments
+    /// * `request` - Verification request containing email and verification code
+    ///
+    /// # Returns
+    /// * `Ok(VerifyEmailResponse)` - JWT tokens and user object
+    /// * `Err(UserServiceError)` - Verification, expiration, or service errors
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided email
+    /// * `InvalidVerificationCode` - Code not found or already used
+    /// * `VerificationCodeExpired` - Code has passed its expiration time
+    /// * `TooManyAttempts` - Exceeded maximum verification attempts
+    /// * `ValidationError` - Invalid request data
+    /// * `JwtServiceError` - Token generation failed
+    /// * `EmailServiceError` - Welcome email sending failed (non-fatal)
+    ///
+    /// # Security Features
+    /// * Rate limiting: Maximum 3 attempts per verification code
+    /// * Time-based expiration: Codes expire after 10 minutes
+    /// * Single-use: Codes cannot be reused after successful verification
+    /// * Atomic operations: Database updates are transactional
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::models::requests::VerifyEmailRequest;
+    ///
+    /// let request = VerifyEmailRequest {
+    ///     email: "jane@example.com".to_string(),
+    ///     verification_code: "123456".to_string(),
+    /// };
+    ///
+    /// let response = user_service.verify_email(request).await?;
+    /// println!("User verified! Access token: {}", response.access_token);
+    /// ```
     pub async fn verify_email(
         &self,
         request: VerifyEmailRequest,
@@ -604,13 +915,65 @@ impl UserService {
         })
     }
 
-    /// Generates a 6-digit verification code
+    /// Generates a cryptographically secure 6-digit verification code
+    ///
+    /// Creates a random numeric code with leading zeros preserved.
+    /// Used for both email verification and OTP signin flows.
+    ///
+    /// # Returns
+    /// A 6-digit string with leading zeros (e.g., "000123", "456789")
+    ///
+    /// # Security Notes
+    /// Uses the system's cryptographically secure random number generator.
+    /// Provides 10^6 = 1,000,000 possible combinations.
     fn generate_verification_code(&self) -> String {
         let mut rng = rand::thread_rng();
         format!("{:06}", rng.gen_range(0..1000000))
     }
 
-    /// Requests an OTP for email-based sign-in for existing verified users
+    /// Requests a one-time password (OTP) for email-based signin
+    ///
+    /// Generates and sends an OTP to existing verified users for passwordless signin.
+    /// Implements rate limiting and security tracking with IP address and user agent.
+    /// Requires email service to be configured.
+    ///
+    /// # Arguments
+    /// * `request` - OTP request containing the user's email address
+    /// * `ip_address` - Optional client IP address for security logging
+    /// * `user_agent` - Optional client user agent for security logging
+    ///
+    /// # Returns
+    /// * `Ok(OtpSigninEmailResponse)` - Confirmation message and expiration time
+    /// * `Err(UserServiceError)` - Various authentication and rate limiting errors
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided email
+    /// * `EmailNotVerified` - User account exists but email is not verified
+    /// * `TooManyOtpRequests` - Rate limit exceeded (3 requests per hour)
+    /// * `EmailServiceError` - Email service not configured or sending failed
+    /// * `DatabaseError` - Database operation failed
+    ///
+    /// # Security Features
+    /// * Rate limiting: Maximum 3 OTP requests per hour per user
+    /// * OTP expiration: Codes expire after 5 minutes
+    /// * Single active OTP: Previous unused OTPs are invalidated
+    /// * Security logging: IP address and user agent tracking
+    /// * Email verification requirement: Only verified accounts can request OTPs
+    ///
+    /// # Examples
+    /// ```
+    /// use std::net::IpAddr;
+    /// use user_service::models::requests::OtpSigninEmailRequest;
+    ///
+    /// let request = OtpSigninEmailRequest {
+    ///     email: "user@example.com".to_string(),
+    /// };
+    /// let ip = Some(IpAddr::V4([192, 168, 1, 100].into()));
+    /// let user_agent = Some("Mozilla/5.0...".to_string());
+    ///
+    /// let response = user_service.request_signin_otp(request, ip, user_agent).await?;
+    /// println!("OTP sent, expires in {} seconds", response.expires_in);
+    /// ```
     pub async fn request_signin_otp(
         &self,
         request: OtpSigninEmailRequest,
@@ -705,7 +1068,46 @@ impl UserService {
         })
     }
 
-    /// Verifies OTP and completes sign-in for existing verified users
+    /// Verifies OTP and completes signin for existing users
+    ///
+    /// Validates the provided OTP against stored codes, marks it as used,
+    /// and generates JWT tokens for authenticated access. This completes
+    /// the passwordless signin flow for existing verified users.
+    ///
+    /// # Arguments
+    /// * `request` - OTP verification request containing email and OTP code
+    ///
+    /// # Returns
+    /// * `Ok(OtpSigninVerifyResponse)` - JWT tokens and user object
+    /// * `Err(UserServiceError)` - Verification, expiration, or service errors
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided email
+    /// * `InvalidVerificationCode` - OTP not found, already used, or invalid
+    /// * `VerificationCodeExpired` - OTP has passed its 5-minute expiration
+    /// * `TooManyAttempts` - Exceeded maximum verification attempts
+    /// * `JwtServiceError` - Token generation failed
+    /// * `DatabaseError` - Database operation failed
+    ///
+    /// # Security Features
+    /// * Time-based expiration: OTPs expire after 5 minutes
+    /// * Single-use enforcement: OTPs are marked as used after verification
+    /// * Attempt limiting: Maximum attempts per OTP to prevent brute force
+    /// * Atomic operations: OTP verification and token generation are transactional
+    /// * Recent OTP selection: Uses the most recently generated unused OTP
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::models::requests::OtpSigninVerifyRequest;
+    ///
+    /// let request = OtpSigninVerifyRequest {
+    ///     email: "user@example.com".to_string(),
+    ///     otp_code: "123456".to_string(),
+    /// };
+    ///
+    /// let response = user_service.verify_signin_otp(request).await?;
+    /// println!("Signin successful! Access token: {}", response.access_token);
+    /// ```
     pub async fn verify_signin_otp(
         &self,
         request: OtpSigninVerifyRequest,
@@ -806,7 +1208,22 @@ impl UserService {
         })
     }
 
-    /// Health check for the service
+    /// Performs a health check on the user service
+    ///
+    /// Executes a simple database query to verify connectivity and service availability.
+    /// Used by health check endpoints and monitoring systems.
+    ///
+    /// # Returns
+    /// * `Ok(())` - Service is healthy and database is accessible
+    /// * `Err(UserServiceError::DatabaseError)` - Database connectivity issues
+    ///
+    /// # Examples
+    /// ```
+    /// match user_service.health_check().await {
+    ///     Ok(()) => println!("User service is healthy"),
+    ///     Err(e) => println!("Health check failed: {}", e),
+    /// }
+    /// ```
     pub async fn health_check(&self) -> UserServiceResult<()> {
         sqlx::query!("SELECT 1 as health_check")
             .fetch_one(&self.db_pool)

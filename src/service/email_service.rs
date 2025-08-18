@@ -101,7 +101,40 @@ pub struct EmailConfig {
 }
 
 impl EmailConfig {
-    /// Create email configuration from environment variables
+    /// Creates email configuration from environment variables
+    ///
+    /// Reads SMTP and email configuration from environment variables with sensible defaults
+    /// where appropriate. Required variables will cause an error if not provided.
+    ///
+    /// # Environment Variables
+    /// * `SMTP_HOST` - SMTP server hostname (default: "localhost")
+    /// * `SMTP_PORT` - SMTP server port (default: 587)
+    /// * `SMTP_USERNAME` - SMTP authentication username (required)
+    /// * `SMTP_PASSWORD` - SMTP authentication password (required)
+    /// * `FROM_EMAIL` - Sender email address (required)
+    /// * `FROM_NAME` - Sender display name (default: "User Service")
+    /// * `APP_BASE_URL` - Application base URL for email links (default: "http://localhost:3000")
+    ///
+    /// # Returns
+    /// * `Ok(EmailConfig)` - Successfully parsed configuration
+    /// * `Err(anyhow::Error)` - Missing required environment variables
+    ///
+    /// # Errors
+    /// Returns an error if any required environment variables are missing:
+    /// - `SMTP_USERNAME`
+    /// - `SMTP_PASSWORD`
+    /// - `FROM_EMAIL`
+    ///
+    /// # Examples
+    /// ```
+    /// std::env::set_var("SMTP_USERNAME", "user@smtp.com");
+    /// std::env::set_var("SMTP_PASSWORD", "password");
+    /// std::env::set_var("FROM_EMAIL", "noreply@myapp.com");
+    ///
+    /// let config = EmailConfig::from_env()?;
+    /// assert_eq!(config.smtp_host, "localhost");
+    /// assert_eq!(config.smtp_port, 587);
+    /// ```
     pub fn from_env() -> Result<Self> {
         Ok(Self {
             smtp_host: std::env::var("SMTP_HOST").unwrap_or_else(|_| "localhost".to_string()),
@@ -130,7 +163,35 @@ pub struct EmailService {
 }
 
 impl EmailService {
-    /// Create a new email service
+    /// Creates a new email service instance with SMTP transport and templates
+    ///
+    /// Initializes the email service with SMTP configuration and loads email templates.
+    /// Templates are loaded from the filesystem if available, otherwise embedded
+    /// templates are used as fallbacks.
+    ///
+    /// # Arguments
+    /// * `config` - Email configuration including SMTP settings and sender information
+    ///
+    /// # Returns
+    /// * `Ok(EmailService)` - Successfully configured email service
+    /// * `Err(EmailServiceError)` - SMTP configuration or template loading failed
+    ///
+    /// # Errors
+    /// * `SmtpConfig` - Invalid SMTP server configuration
+    /// * `TemplateError` - Failed to load or parse email templates
+    ///
+    /// # Template Loading
+    /// 1. Attempts to load templates from `templates/**/*` directory
+    /// 2. Falls back to embedded templates if directory not found
+    /// 3. Adds essential email templates (verification, welcome, OTP)
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::service::{EmailService, EmailConfig};
+    ///
+    /// let config = EmailConfig::from_env()?;
+    /// let email_service = EmailService::new(config)?;
+    /// ```
     pub fn new(config: EmailConfig) -> EmailServiceResult<Self> {
         // Create SMTP transport
         let creds = Credentials::new(config.smtp_username.clone(), config.smtp_password.clone());
@@ -159,7 +220,33 @@ impl EmailService {
         })
     }
 
-    /// Add embedded email templates
+    /// Adds embedded email templates to the template engine
+    ///
+    /// Registers HTML and text versions of essential email templates as fallbacks.
+    /// These templates are used when external template files are not available.
+    ///
+    /// # Arguments
+    /// * `tera` - Mutable reference to the Tera template engine
+    ///
+    /// # Returns
+    /// * `Ok(())` - Templates added successfully
+    /// * `Err(EmailServiceError)` - Template parsing or registration failed
+    ///
+    /// # Templates Added
+    /// * `verification_email_html` - HTML version of email verification template
+    /// * `verification_email_text` - Plain text version of email verification template
+    ///
+    /// # Template Variables
+    /// Available variables in verification templates:
+    /// - `user_name` - Recipient's display name
+    /// - `verification_code` - 6-digit verification code
+    /// - `expires_in_minutes` - Code expiration time in minutes
+    /// - `app_name` - Application name from configuration
+    /// - `app_base_url` - Application base URL
+    /// - `current_year` - Current year for copyright notices
+    ///
+    /// # Errors
+    /// * `TemplateError` - Template syntax errors or registration failures
     fn add_embedded_templates(tera: &mut Tera) -> EmailServiceResult<()> {
         // Email verification template (HTML)
         let verification_html = r#"
@@ -238,7 +325,49 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         Ok(())
     }
 
-    /// Send email verification code
+    /// Sends an email verification code to complete user registration
+    ///
+    /// Sends a professionally formatted email containing a 6-digit verification code
+    /// with both HTML and plain text versions. The email includes branding, expiration
+    /// information, and security notices.
+    ///
+    /// # Arguments
+    /// * `to_email` - Recipient email address (must be valid format)
+    /// * `user_name` - Recipient's display name for personalization
+    /// * `verification_code` - 6-digit numeric verification code
+    /// * `expires_in_minutes` - Code expiration time (typically 10 minutes)
+    ///
+    /// # Returns
+    /// * `Ok(())` - Email sent successfully
+    /// * `Err(EmailServiceError)` - Template rendering, validation, or sending failed
+    ///
+    /// # Errors
+    /// * `InvalidEmailAddress` - Malformed sender or recipient email addresses
+    /// * `RenderError` - Template rendering failed with provided context
+    /// * `SendFailure` - SMTP transmission failed
+    ///
+    /// # Security Features
+    /// * Time-limited verification codes
+    /// * Clear expiration notices to users
+    /// * Professional branding to prevent phishing confusion
+    /// * Both HTML and text versions for compatibility
+    ///
+    /// # Template Context
+    /// * User personalization with name
+    /// * Prominent code display with styling
+    /// * Expiration warnings
+    /// * Application branding and copyright
+    ///
+    /// # Examples
+    /// ```
+    /// let email_service = EmailService::new(config)?;
+    /// email_service.send_verification_email(
+    ///     "user@example.com",
+    ///     "John Doe",
+    ///     "123456",
+    ///     10
+    /// ).await?;
+    /// ```
     pub async fn send_verification_email(
         &self,
         to_email: &str,
@@ -321,7 +450,38 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         }
     }
 
-    /// Send welcome email after successful verification
+    /// Sends a welcome email after successful account verification
+    ///
+    /// Sends a congratulatory email confirming account activation and welcoming
+    /// the user to the service. This email is sent after successful email verification
+    /// to provide positive feedback and next steps.
+    ///
+    /// # Arguments
+    /// * `to_email` - Verified email address of the new user
+    /// * `to_name` - User's display name for personalization
+    ///
+    /// # Returns
+    /// * `Ok(())` - Welcome email sent successfully
+    /// * `Err(EmailServiceError)` - Email validation or sending failed
+    ///
+    /// # Errors
+    /// * `InvalidEmailAddress` - Malformed sender or recipient email
+    /// * `SendFailure` - SMTP transmission failed
+    ///
+    /// # Design Notes
+    /// * Non-critical email - failures should not block user flow
+    /// * Simple template without external dependencies
+    /// * Positive messaging to encourage engagement
+    /// * Brief content to avoid overwhelming new users
+    ///
+    /// # Examples
+    /// ```
+    /// // After successful email verification
+    /// email_service.send_welcome_email(
+    ///     "newuser@example.com",
+    ///     "Jane Smith"
+    /// ).await?;
+    /// ```
     pub async fn send_welcome_email(
         &self,
         to_email: &str,
@@ -396,7 +556,43 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         }
     }
 
-    /// Send OTP code for sign-in
+    /// Sends a one-time password (OTP) for passwordless sign-in
+    ///
+    /// Delivers a time-sensitive OTP code for existing verified users to sign in
+    /// without entering a password. Includes security warnings and expiration notices.
+    ///
+    /// # Arguments
+    /// * `to_email` - Email address of the authenticated user
+    /// * `to_name` - User's display name for personalization
+    /// * `otp_code` - 6-digit numeric OTP code
+    ///
+    /// # Returns
+    /// * `Ok(())` - OTP email sent successfully
+    /// * `Err(EmailServiceError)` - Template rendering, validation, or sending failed
+    ///
+    /// # Errors
+    /// * `InvalidEmailAddress` - Malformed sender or recipient email
+    /// * `SendFailure` - SMTP transmission failed
+    ///
+    /// # Security Features
+    /// * Short expiration time (5 minutes)
+    /// * Clear security warnings about unauthorized requests
+    /// * Instructions to ignore if not requested
+    /// * Fallback templates if external templates unavailable
+    ///
+    /// # Template Fallback
+    /// Uses external templates if available (`signin_otp.html`, `signin_otp.txt`),
+    /// otherwise falls back to embedded templates for reliability.
+    ///
+    /// # Examples
+    /// ```
+    /// // For passwordless sign-in
+    /// email_service.send_signin_otp_email(
+    ///     "user@example.com",
+    ///     "John Doe",
+    ///     "987654"
+    /// ).await?;
+    /// ```
     pub async fn send_signin_otp_email(
         &self,
         to_email: &str,
@@ -473,7 +669,24 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         }
     }
 
-    /// Fallback HTML template for sign-in OTP email
+    /// Generates fallback HTML template for sign-in OTP emails
+    ///
+    /// Creates a simple but functional HTML email template when external templates
+    /// are unavailable. Ensures email delivery even without template files.
+    ///
+    /// # Arguments
+    /// * `user_name` - Recipient's name for personalization
+    /// * `otp_code` - 6-digit OTP code to display
+    ///
+    /// # Returns
+    /// Complete HTML email template as a string
+    ///
+    /// # Features
+    /// * Responsive HTML structure
+    /// * Clear code presentation
+    /// * Security warnings
+    /// * Professional appearance
+    /// * Copyright and branding
     fn fallback_signin_otp_html(&self, user_name: &str, otp_code: &str) -> String {
         format!(
             r#"
@@ -499,7 +712,23 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         )
     }
 
-    /// Fallback text template for sign-in OTP email
+    /// Generates fallback plain text template for sign-in OTP emails
+    ///
+    /// Creates a simple plain text email template for email clients that don't
+    /// support HTML or when external templates are unavailable.
+    ///
+    /// # Arguments
+    /// * `user_name` - Recipient's name for personalization
+    /// * `otp_code` - 6-digit OTP code to display
+    ///
+    /// # Returns
+    /// Complete plain text email template as a string
+    ///
+    /// # Features
+    /// * Clean, readable text format
+    /// * Clear instructions
+    /// * Security warnings
+    /// * Professional tone
     fn fallback_signin_otp_text(&self, user_name: &str, otp_code: &str) -> String {
         format!(
             "Sign-in Code\n\nHello {},\n\nHere's your sign-in code: {}\n\nEnter this code to complete your sign-in. This code will expire in 5 minutes.\n\nIf you didn't request this code, please ignore this email.\n\n© {} User Service\nThis is an automated message.",
@@ -509,7 +738,33 @@ This email was sent from {{ app_name }}. If you have any questions, please conta
         )
     }
 
-    /// Test email configuration by sending a test email
+    /// Tests the email service configuration and connectivity
+    ///
+    /// Validates that the email service is properly configured and can potentially
+    /// send emails. This is a basic connectivity test that doesn't actually send
+    /// a test email but verifies the configuration appears valid.
+    ///
+    /// # Returns
+    /// * `Ok(())` - Email service appears to be configured correctly
+    /// * `Err(EmailServiceError)` - Configuration validation failed
+    ///
+    /// # Limitations
+    /// This is a basic test that only validates configuration structure.
+    /// A full test would require sending an actual test email to verify
+    /// SMTP connectivity and authentication.
+    ///
+    /// # Use Cases
+    /// * Application startup validation
+    /// * Health check endpoints
+    /// * Configuration troubleshooting
+    /// * Integration testing setup
+    ///
+    /// # Examples
+    /// ```
+    /// let email_service = EmailService::new(config)?;
+    /// email_service.test_connection().await?;
+    /// println!("Email service is ready");
+    /// ```
     pub async fn test_connection(&self) -> EmailServiceResult<()> {
         // This is a simple connection test - we could enhance it further
         debug!("Testing email service connection");

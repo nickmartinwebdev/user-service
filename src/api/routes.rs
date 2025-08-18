@@ -5,13 +5,17 @@
 //! for different deployment scenarios, such as microservices or feature-specific services.
 
 use axum::{
-    middleware::from_fn_with_state,
+    middleware::{from_fn, from_fn_with_state},
     routing::{delete, get, post, put},
     Router,
 };
 use std::sync::Arc;
 
 use super::handlers::*;
+use super::security_middleware::{
+    audit_logging_middleware, password_detection_middleware, rate_limiting_middleware,
+    security_headers_middleware,
+};
 use super::webauthn_handlers;
 use super::{auth_middleware, AppState};
 use crate::service::JwtService;
@@ -415,11 +419,17 @@ impl RouterBuilder {
         self
     }
 
-    /// Builds the Axum router with the configured routes
+    /// Builds the Axum router with the configured routes and security middleware
     ///
     /// Returns a `Router<AppState>` that can be used with Axum. Only the enabled
     /// routes will be registered, which improves performance and security by
     /// reducing the attack surface.
+    ///
+    /// Security middleware is always enabled and includes:
+    /// - Rate limiting for authentication endpoints
+    /// - Security audit logging for all authentication events
+    /// - Password field detection and blocking
+    /// - Security headers on all responses
     ///
     /// Note: OAuth endpoints that require authentication (`/auth/oauth/providers` and
     /// `/auth/oauth/providers/{provider}`) will need authentication middleware applied
@@ -541,7 +551,7 @@ impl RouterBuilder {
 
         if self.oauth_unlink {
             protected_router = protected_router.route(
-                "/auth/oauth/providers/:provider",
+                "/auth/oauth/providers/{provider}",
                 delete(super::oauth_handlers::unlink_oauth_provider),
             );
         }
@@ -553,14 +563,14 @@ impl RouterBuilder {
 
         if self.passkey_delete {
             protected_router = protected_router.route(
-                "/auth/passkeys/:credential_id",
+                "/auth/passkeys/{credential_id}",
                 delete(webauthn_handlers::delete_passkey),
             );
         }
 
         if self.passkey_update {
             protected_router = protected_router.route(
-                "/auth/passkeys/:credential_id",
+                "/auth/passkeys/{credential_id}",
                 put(webauthn_handlers::update_passkey),
             );
         }
@@ -572,7 +582,18 @@ impl RouterBuilder {
         }
 
         // Merge public and protected routes
-        router.merge(protected_router)
+        let app = router.merge(protected_router);
+
+        // Apply security middleware layers in order (innermost to outermost)
+        app
+            // 1. Security headers (outermost - applied to all responses)
+            .layer(from_fn(security_headers_middleware))
+            // 2. Audit logging (log all authentication events)
+            .layer(from_fn(audit_logging_middleware))
+            // 3. Password detection (block password fields)
+            .layer(from_fn(password_detection_middleware))
+            // 4. Rate limiting (innermost - applied first)
+            .layer(from_fn(rate_limiting_middleware))
     }
 }
 

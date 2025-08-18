@@ -135,21 +135,71 @@ impl From<WebAuthnServiceError> for AppError {
 /// Result type for WebAuthn service operations
 pub type WebAuthnServiceResult<T> = Result<T, WebAuthnServiceError>;
 
-/// WebAuthn service for managing passkey authentication
+/// WebAuthn service for managing passkey authentication and FIDO2 credentials
+///
+/// Provides comprehensive WebAuthn/FIDO2 functionality including:
+/// - Passkey registration and authentication
+/// - Challenge generation and validation
+/// - Credential lifecycle management
+/// - Integration with existing JWT authentication
+///
+/// # Security Features
+/// * FIDO2/WebAuthn standard compliance
+/// * Cryptographic challenge-response authentication
+/// * Hardware security key support
+/// * Biometric authentication support
+/// * Phishing-resistant authentication
 #[derive(Clone)]
 pub struct WebAuthnService {
-    /// Database connection pool
+    /// Database connection pool for credential and challenge storage
     pool: PgPool,
-    /// WebAuthn core instance
+    /// WebAuthn core instance for cryptographic operations
     webauthn: Webauthn,
-    /// WebAuthn configuration
+    /// WebAuthn configuration including relying party settings
     config: WebAuthnConfig,
-    /// JWT service for token generation
+    /// JWT service for generating authentication tokens after successful authentication
     jwt_service: JwtService,
 }
 
 impl WebAuthnService {
-    /// Create a new WebAuthn service instance
+    /// Creates a new WebAuthn service instance with proper configuration validation
+    ///
+    /// Initializes the WebAuthn service with the provided configuration, validates
+    /// the relying party settings, and prepares the service for passkey operations.
+    ///
+    /// # Arguments
+    /// * `pool` - Database connection pool for storing credentials and challenges
+    /// * `config` - WebAuthn configuration including relying party details
+    /// * `jwt_service` - JWT service for token generation after authentication
+    ///
+    /// # Returns
+    /// * `Ok(WebAuthnService)` - Successfully configured WebAuthn service
+    /// * `Err(WebAuthnServiceError)` - Configuration validation or initialization failed
+    ///
+    /// # Errors
+    /// * `ConfigurationError` - Invalid relying party origin URL or configuration
+    ///
+    /// # Configuration Requirements
+    /// * Valid relying party origin URL (must be HTTPS in production)
+    /// * Proper relying party ID (typically the domain name)
+    /// * Descriptive relying party name for user-facing prompts
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::service::{WebAuthnService, JwtService};
+    /// use user_service::models::webauthn::WebAuthnConfig;
+    /// use sqlx::PgPool;
+    ///
+    /// let config = WebAuthnConfig {
+    ///     rp_id: "example.com".to_string(),
+    ///     rp_name: "Example App".to_string(),
+    ///     rp_origin: "https://example.com".to_string(),
+    /// };
+    ///
+    /// let pool = PgPool::connect("postgresql://...").await?;
+    /// let jwt_service = JwtService::new(pool.clone(), "secret1".to_string(), "secret2".to_string());
+    /// let webauthn_service = WebAuthnService::new(pool, config, jwt_service)?;
+    /// ```
     pub fn new(
         pool: PgPool,
         config: WebAuthnConfig,
@@ -183,7 +233,50 @@ impl WebAuthnService {
         })
     }
 
-    /// Begin passkey registration for an authenticated user
+    /// Begins passkey registration for an authenticated user
+    ///
+    /// Initiates the WebAuthn registration ceremony by generating a cryptographic
+    /// challenge and credential creation options. The user must be authenticated
+    /// before calling this method. Existing credentials are excluded to prevent
+    /// duplicate registrations.
+    ///
+    /// # Arguments
+    /// * `user_id` - Unique identifier of the authenticated user
+    /// * `_request` - Registration parameters (currently unused, reserved for future options)
+    ///
+    /// # Returns
+    /// * `Ok(PasskeyRegistrationBeginResponse)` - Challenge and credential creation options
+    /// * `Err(WebAuthnServiceError)` - User not found, challenge generation, or database errors
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided ID
+    /// * `ChallengeGenerationError` - Failed to generate WebAuthn challenge
+    /// * `DatabaseError` - Failed to store challenge or query existing credentials
+    ///
+    /// # Security Features
+    /// * Cryptographically secure challenge generation
+    /// * Credential exclusion list prevents duplicate registrations
+    /// * Challenge stored with expiration for replay protection
+    /// * User verification requirements enforced
+    ///
+    /// # WebAuthn Flow
+    /// 1. Validates user exists and is authenticated
+    /// 2. Retrieves existing credentials for exclusion
+    /// 3. Generates WebAuthn registration challenge
+    /// 4. Stores challenge state in database with expiration
+    /// 5. Returns credential creation options for client
+    ///
+    /// # Examples
+    /// ```
+    /// use uuid::Uuid;
+    /// use user_service::models::webauthn::PasskeyRegistrationBeginRequest;
+    ///
+    /// let user_id = Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000")?;
+    /// let request = PasskeyRegistrationBeginRequest {};
+    ///
+    /// let response = webauthn_service.begin_passkey_registration(user_id, request).await?;
+    /// // Client uses response.options to create credential
+    /// ```
     pub async fn begin_passkey_registration(
         &self,
         user_id: Uuid,
@@ -228,7 +321,55 @@ impl WebAuthnService {
         })
     }
 
-    /// Finish passkey registration for an authenticated user
+    /// Completes passkey registration for an authenticated user
+    ///
+    /// Validates the credential creation response from the client authenticator,
+    /// verifies the cryptographic attestation, and stores the new credential
+    /// for future authentication use.
+    ///
+    /// # Arguments
+    /// * `user_id` - Unique identifier of the authenticated user
+    /// * `request` - Credential creation response from the client
+    ///
+    /// # Returns
+    /// * `Ok(PasskeyRegistrationFinishResponse)` - Registration success confirmation
+    /// * `Err(WebAuthnServiceError)` - Validation, storage, or security errors
+    ///
+    /// # Errors
+    /// * `ChallengeNotFound` - No matching registration challenge found
+    /// * `ChallengeExpired` - Registration challenge has expired
+    /// * `CredentialRegistrationError` - Invalid credential or attestation
+    /// * `CredentialAlreadyExists` - Credential ID already registered
+    /// * `DatabaseError` - Failed to store credential
+    ///
+    /// # Security Validations
+    /// * Challenge response authenticity verification
+    /// * Cryptographic attestation validation
+    /// * Origin verification against relying party
+    /// * User presence and verification checks
+    /// * Credential ID uniqueness enforcement
+    ///
+    /// # WebAuthn Flow
+    /// 1. Retrieves and validates stored challenge
+    /// 2. Verifies credential creation response
+    /// 3. Validates cryptographic attestation
+    /// 4. Stores credential with metadata
+    /// 5. Returns success confirmation
+    ///
+    /// # Examples
+    /// ```
+    /// use uuid::Uuid;
+    /// use user_service::models::webauthn::PasskeyRegistrationFinishRequest;
+    ///
+    /// let user_id = Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000")?;
+    /// let request = PasskeyRegistrationFinishRequest {
+    ///     credential: credential_from_client,
+    ///     friendly_name: Some("My iPhone".to_string()),
+    /// };
+    ///
+    /// let response = webauthn_service.finish_passkey_registration(user_id, request).await?;
+    /// println!("Passkey registered successfully: {}", response.credential_id);
+    /// ```
     pub async fn finish_passkey_registration(
         &self,
         user_id: Uuid,
@@ -282,6 +423,54 @@ impl WebAuthnService {
     }
 
     /// Begin passkey authentication (no user context required)
+    /// Begins passkey authentication for passwordless sign-in
+    ///
+    /// Initiates the WebAuthn authentication ceremony by generating a cryptographic
+    /// challenge and authentication options. This method can be called without
+    /// prior authentication - the user identity is determined by their credential.
+    ///
+    /// # Arguments
+    /// * `request` - Authentication request containing optional user email
+    ///
+    /// # Returns
+    /// * `Ok(PasskeyAuthenticationBeginResponse)` - Challenge and authentication options
+    /// * `Err(WebAuthnServiceError)` - Challenge generation or database errors
+    ///
+    /// # Errors
+    /// * `ChallengeGenerationError` - Failed to generate WebAuthn challenge
+    /// * `DatabaseError` - Failed to query credentials or store challenge
+    ///
+    /// # Authentication Flow
+    /// * **Discoverable Credentials**: If no email provided, uses resident keys
+    /// * **Account-Specific**: If email provided, loads user's registered credentials
+    ///
+    /// # Security Features
+    /// * Cryptographically secure challenge generation
+    /// * Support for both resident and non-resident credentials
+    /// * Challenge stored with expiration for replay protection
+    /// * User verification enforcement
+    ///
+    /// # WebAuthn Flow
+    /// 1. Determines authentication mode (discoverable vs account-specific)
+    /// 2. Loads applicable credentials for challenge
+    /// 3. Generates WebAuthn authentication challenge
+    /// 4. Stores challenge state with expiration
+    /// 5. Returns authentication options for client
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::models::webauthn::PasskeyAuthenticationBeginRequest;
+    ///
+    /// // Discoverable credential authentication
+    /// let request = PasskeyAuthenticationBeginRequest { email: None };
+    /// let response = webauthn_service.begin_passkey_authentication(request).await?;
+    ///
+    /// // Account-specific authentication
+    /// let request = PasskeyAuthenticationBeginRequest {
+    ///     email: Some("user@example.com".to_string())
+    /// };
+    /// let response = webauthn_service.begin_passkey_authentication(request).await?;
+    /// ```
     pub async fn begin_passkey_authentication(
         &self,
         request: PasskeyAuthenticationBeginRequest,
@@ -314,6 +503,55 @@ impl WebAuthnService {
     }
 
     /// Finish passkey authentication
+    /// Completes passkey authentication and generates JWT tokens
+    ///
+    /// Validates the authentication response from the client authenticator,
+    /// verifies the cryptographic assertion, identifies the user, and generates
+    /// JWT tokens for authenticated access.
+    ///
+    /// # Arguments
+    /// * `request` - Authentication response from the client authenticator
+    ///
+    /// # Returns
+    /// * `Ok(PasskeyAuthenticationFinishResponse)` - JWT tokens and user information
+    /// * `Err(WebAuthnServiceError)` - Validation, authentication, or token generation errors
+    ///
+    /// # Errors
+    /// * `ChallengeNotFound` - No matching authentication challenge found
+    /// * `ChallengeExpired` - Authentication challenge has expired
+    /// * `CredentialAuthenticationError` - Invalid assertion or verification failed
+    /// * `CredentialNotFound` - Credential ID not registered
+    /// * `UserNotFound` - User associated with credential not found
+    /// * `JwtServiceError` - Failed to generate authentication tokens
+    ///
+    /// # Security Validations
+    /// * Challenge response authenticity verification
+    /// * Cryptographic assertion validation
+    /// * Origin verification against relying party
+    /// * User presence and verification checks
+    /// * Credential signature verification
+    /// * Counter validation for replay protection
+    ///
+    /// # WebAuthn Flow
+    /// 1. Retrieves and validates stored challenge
+    /// 2. Looks up credential by ID
+    /// 3. Verifies authentication assertion
+    /// 4. Updates credential usage statistics
+    /// 5. Generates JWT tokens for the user
+    /// 6. Returns tokens and user information
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::models::webauthn::PasskeyAuthenticationFinishRequest;
+    ///
+    /// let request = PasskeyAuthenticationFinishRequest {
+    ///     credential: authentication_response_from_client,
+    /// };
+    ///
+    /// let response = webauthn_service.finish_passkey_authentication(request).await?;
+    /// println!("User {} authenticated with passkey", response.user.email);
+    /// // Use response.access_token for API authorization
+    /// ```
     pub async fn finish_passkey_authentication(
         &self,
         request: PasskeyAuthenticationFinishRequest,
@@ -445,7 +683,44 @@ impl WebAuthnService {
         })
     }
 
-    /// Cleanup expired challenges
+    /// Cleans up expired WebAuthn challenges from the database
+    ///
+    /// Removes all authentication and registration challenges that have passed
+    /// their expiration time. This is a maintenance operation that should be
+    /// run periodically to prevent database bloat and maintain security hygiene.
+    ///
+    /// # Returns
+    /// * `Ok(u64)` - Number of expired challenges that were deleted
+    /// * `Err(WebAuthnServiceError)` - Database operation failed
+    ///
+    /// # Errors
+    /// * `DatabaseError` - Failed to delete expired challenges
+    ///
+    /// # Performance Notes
+    /// * Operation performance depends on number of expired challenges
+    /// * Consider adding database index on `expires_at` column
+    /// * Safe to run frequently as it only affects expired challenges
+    ///
+    /// # Scheduling Recommendations
+    /// * Run every 15-30 minutes for active applications
+    /// * Include in application health check routines
+    /// * Trigger during application startup
+    /// * Consider running during off-peak hours for large databases
+    ///
+    /// # Security Benefits
+    /// * Prevents challenge replay attacks using expired challenges
+    /// * Reduces database storage requirements
+    /// * Maintains clean audit trails
+    /// * Improves query performance on challenge tables
+    ///
+    /// # Examples
+    /// ```
+    /// // Cleanup job in scheduled task
+    /// let deleted_count = webauthn_service.cleanup_expired_challenges().await?;
+    /// if deleted_count > 0 {
+    ///     println!("Cleaned up {} expired WebAuthn challenges", deleted_count);
+    /// }
+    /// ```
     pub async fn cleanup_expired_challenges(&self) -> WebAuthnServiceResult<u64> {
         let result = sqlx::query!("DELETE FROM webauthn_challenges WHERE expires_at < NOW()")
             .execute(&self.pool)
@@ -661,6 +936,28 @@ impl WebAuthnService {
     }
 
     /// Generate user handle for WebAuthn
+    /// Generates a WebAuthn user handle from a user ID
+    ///
+    /// Converts a UUID user identifier into the byte array format required
+    /// by the WebAuthn specification for user handles. User handles are
+    /// opaque byte sequences that identify users without revealing PII.
+    ///
+    /// # Arguments
+    /// * `user_id` - UUID of the user
+    ///
+    /// # Returns
+    /// 16-byte array representing the user UUID
+    ///
+    /// # WebAuthn Specification
+    /// User handles must be:
+    /// * Maximum 64 bytes in length
+    /// * Opaque byte sequences
+    /// * Unique per user within the relying party
+    /// * Not contain personally identifiable information
+    ///
+    /// # Privacy Notes
+    /// Using UUID bytes provides a privacy-preserving user identifier
+    /// that doesn't expose email addresses or other PII to authenticators.
     fn generate_user_handle(&self, user_id: Uuid) -> Vec<u8> {
         user_id.as_bytes().to_vec()
     }

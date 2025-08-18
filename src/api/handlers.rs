@@ -16,7 +16,7 @@ use validator::Validate;
 
 use crate::{
     models::requests::*,
-    service::{JwtService, UserService},
+    service::{JwtService, RateLimitService, SecurityAuditService, UserService},
     utils::error::{AppError, AppResult},
     VERSION,
 };
@@ -36,6 +36,10 @@ pub struct AppState {
     pub oauth_service: Option<Arc<crate::service::OAuthService>>,
     /// WebAuthn service instance for passkey authentication
     pub webauthn_service: Option<Arc<crate::service::WebAuthnService>>,
+    /// Rate limiting service for authentication security (required)
+    pub rate_limit_service: Arc<RateLimitService>,
+    /// Security audit service for logging authentication events (required)
+    pub security_audit_service: Arc<SecurityAuditService>,
 }
 
 /// Standard success response wrapper for API responses

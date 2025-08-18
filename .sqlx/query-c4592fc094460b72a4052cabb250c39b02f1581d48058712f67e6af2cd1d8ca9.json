@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM auth_rate_limits\n            WHERE identifier = $1 AND endpoint = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c4592fc094460b72a4052cabb250c39b02f1581d48058712f67e6af2cd1d8ca9"
+}

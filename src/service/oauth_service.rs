@@ -161,15 +161,47 @@ pub struct OAuthService {
 }
 
 impl OAuthService {
-    /// Create a new OAuth service instance
+    /// Creates a new OAuth service instance with Google OAuth configuration
+    ///
+    /// Initializes the OAuth service with Google OAuth2 client, HTTP client, and
+    /// database connectivity. Validates configuration parameters and sets up
+    /// proper timeouts for external API calls.
     ///
     /// # Arguments
-    /// * `pool` - Database connection pool
-    /// * `google_config` - Google OAuth configuration
-    /// * `jwt_service` - JWT service for token generation
+    /// * `pool` - Database connection pool for state management and user operations
+    /// * `google_config` - Google OAuth configuration with client credentials and URLs
+    /// * `jwt_service` - JWT service for generating authentication tokens
     ///
     /// # Returns
-    /// * `AppResult<Self>` - OAuth service instance or error
+    /// * `Ok(OAuthService)` - Fully configured OAuth service instance
+    /// * `Err(OAuthServiceError)` - Configuration validation or initialization errors
+    ///
+    /// # Errors
+    /// * `ConfigurationError` - Invalid OAuth URLs or client configuration
+    /// * `HttpError` - Failed to create HTTP client
+    ///
+    /// # Configuration Requirements
+    /// * Valid Google OAuth client ID and secret
+    /// * Properly formatted redirect URI
+    /// * Accessible Google OAuth endpoints
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::service::{OAuthService, JwtService};
+    /// use user_service::config::GoogleOAuthConfig;
+    /// use sqlx::PgPool;
+    ///
+    /// let pool = PgPool::connect("postgresql://...").await?;
+    /// let jwt_service = JwtService::new(pool.clone(), "secret1".to_string(), "secret2".to_string());
+    /// let google_config = GoogleOAuthConfig {
+    ///     client_id: "your-client-id".to_string(),
+    ///     client_secret: "your-client-secret".to_string(),
+    ///     redirect_uri: "https://yourapp.com/auth/google/callback".to_string(),
+    ///     state_expires_minutes: 10,
+    /// };
+    ///
+    /// let oauth_service = OAuthService::new(pool, google_config, jwt_service)?;
+    /// ```
     pub fn new(
         pool: PgPool,
         google_config: GoogleOAuthConfig,
@@ -218,15 +250,49 @@ impl OAuthService {
         })
     }
 
-    /// Initiate Google OAuth flow
+    /// Initiates the Google OAuth 2.0 authorization flow
     ///
-    /// Generates an authorization URL and stores a secure state token for CSRF protection.
+    /// Generates a secure authorization URL with CSRF protection using state tokens.
+    /// The state token is stored in the database with expiration tracking to prevent
+    /// replay attacks and session fixation vulnerabilities.
     ///
     /// # Arguments
-    /// * `redirect_url` - Optional redirect URL after successful authentication
+    /// * `redirect_url` - Optional URL to redirect to after successful authentication
     ///
     /// # Returns
-    /// * `AppResult<GoogleOAuthInitResponse>` - Authorization URL and state token
+    /// * `Ok(GoogleOAuthInitResponse)` - Authorization URL and state token for the client
+    /// * `Err(OAuthServiceError)` - Database storage or URL generation errors
+    ///
+    /// # Errors
+    /// * `DatabaseError` - Failed to store state token in database
+    ///
+    /// # Security Features
+    /// * CSRF protection via cryptographically secure state tokens
+    /// * Time-limited state tokens (configurable expiration)
+    /// * Secure random state generation using OAuth2 library
+    /// * Database persistence for state validation
+    ///
+    /// # OAuth Scopes Requested
+    /// * `openid` - OpenID Connect authentication
+    /// * `email` - User's email address
+    /// * `profile` - Basic profile information (name, picture)
+    ///
+    /// # Flow
+    /// 1. Generates cryptographically secure state token
+    /// 2. Creates Google OAuth authorization URL with required scopes
+    /// 3. Stores state token in database with expiration
+    /// 4. Returns authorization URL for client redirect
+    ///
+    /// # Examples
+    /// ```
+    /// let oauth_service = OAuthService::new(pool, config, jwt_service)?;
+    /// let response = oauth_service.initiate_google_oauth(
+    ///     Some("https://myapp.com/dashboard".to_string())
+    /// ).await?;
+    ///
+    /// // Redirect user to response.authorization_url
+    /// // Store response.state for callback validation
+    /// ```
     pub async fn initiate_google_oauth(
         &self,
         redirect_url: Option<String>,
@@ -266,17 +332,62 @@ impl OAuthService {
         })
     }
 
-    /// Handle Google OAuth callback
+    /// Handles the Google OAuth callback and completes the authentication flow
     ///
-    /// Processes the callback from Google OAuth, validates the state token,
-    /// exchanges the authorization code for tokens, fetches user info,
-    /// and creates or links user accounts.
+    /// Processes the OAuth callback from Google, performs comprehensive security
+    /// validation, exchanges the authorization code for access tokens, fetches
+    /// user information, and either creates a new user account or links to an
+    /// existing account based on email address.
     ///
     /// # Arguments
-    /// * `query` - OAuth callback query parameters
+    /// * `query` - OAuth callback query parameters containing code, state, and optional errors
     ///
     /// # Returns
-    /// * `OAuthServiceResult<GoogleOAuthCallbackResponse>` - JWT tokens and user info
+    /// * `Ok(GoogleOAuthCallbackResponse)` - JWT token pair, user object, and registration status
+    /// * `Err(OAuthServiceError)` - Validation, token exchange, or user creation errors
+    ///
+    /// # Errors
+    /// * `InvalidAuthorizationCode` - Missing or invalid authorization code
+    /// * `InvalidState` - Missing, invalid, expired, or reused state token
+    /// * `ProviderError` - Google returned an OAuth error
+    /// * `TokenExchangeError` - Failed to exchange code for access token
+    /// * `UserInfoError` - Failed to fetch user information from Google
+    /// * `AccountLinkingError` - Failed to create or link user account
+    /// * `JwtServiceError` - Failed to generate authentication tokens
+    /// * `DatabaseError` - Database operations failed
+    ///
+    /// # Security Validations
+    /// * CSRF protection via state token validation
+    /// * State token expiration checking
+    /// * One-time use enforcement (state tokens are consumed)
+    /// * Authorization code validation with Google
+    /// * Secure token exchange using OAuth2 standards
+    ///
+    /// # User Account Handling
+    /// * Links to existing account if email already exists
+    /// * Creates new account for new email addresses
+    /// * Stores OAuth provider association
+    /// * Marks email as verified (trusted OAuth provider)
+    /// * Generates JWT tokens for immediate authentication
+    ///
+    /// # Examples
+    /// ```
+    /// use user_service::models::oauth::GoogleOAuthCallbackQuery;
+    ///
+    /// let query = GoogleOAuthCallbackQuery {
+    ///     code: Some("auth_code_from_google".to_string()),
+    ///     state: Some("state_token_from_initiation".to_string()),
+    ///     error: None,
+    ///     error_description: None,
+    /// };
+    ///
+    /// let response = oauth_service.handle_google_callback(query).await?;
+    /// if response.is_new_user {
+    ///     println!("New user registered: {}", response.user.email);
+    /// } else {
+    ///     println!("Existing user logged in: {}", response.user.email);
+    /// }
+    /// ```
     pub async fn handle_google_callback(
         &self,
         query: GoogleOAuthCallbackQuery,
@@ -340,16 +451,41 @@ impl OAuthService {
         })
     }
 
-    /// Validate and consume OAuth state token
+    /// Validates and consumes an OAuth state token for CSRF protection
     ///
-    /// Checks if the state token exists, hasn't expired, and removes it from the database
-    /// to prevent reuse attacks.
+    /// Performs comprehensive validation of the state token including existence,
+    /// expiration checking, and atomic consumption to prevent replay attacks.
+    /// This is a critical security operation in the OAuth flow.
     ///
     /// # Arguments
-    /// * `state_token` - State token to validate
+    /// * `state_token` - The state token to validate and consume
     ///
     /// # Returns
-    /// * `OAuthServiceResult<OAuthState>` - Valid state record or error
+    /// * `Ok(OAuthState)` - Valid state record with metadata
+    /// * `Err(OAuthServiceError)` - Validation failures or database errors
+    ///
+    /// # Errors
+    /// * `StateNotFound` - State token doesn't exist in database
+    /// * `StateExpired` - State token has passed its expiration time
+    /// * `DatabaseError` - Database transaction failed
+    ///
+    /// # Security Features
+    /// * Atomic validation and consumption in database transaction
+    /// * Automatic cleanup of expired tokens
+    /// * One-time use enforcement (tokens deleted after validation)
+    /// * Time-based expiration checking
+    /// * Transaction rollback on validation failures
+    ///
+    /// # Database Operations
+    /// 1. Begins database transaction for atomicity
+    /// 2. Looks up state token record
+    /// 3. Validates expiration timestamp
+    /// 4. Deletes token from database (consumption)
+    /// 5. Commits transaction if all validations pass
+    ///
+    /// # Privacy Notes
+    /// State tokens are automatically cleaned up whether they're expired
+    /// or successfully consumed, preventing database bloat and information leakage.
     async fn validate_and_consume_state(
         &self,
         state_token: &str,
@@ -394,10 +530,45 @@ impl OAuthService {
         Ok(state)
     }
 
-    /// Fetch user information from Google's userinfo endpoint
+    /// Fetches user information from Google's UserInfo API endpoint
+    ///
+    /// Makes an authenticated request to Google's userinfo endpoint to retrieve
+    /// the user's profile information including email, name, and profile picture.
+    /// Uses the access token obtained from the OAuth token exchange.
     ///
     /// # Arguments
-    /// * `access_token` - Google OAuth access token
+    /// * `access_token` - Valid Google OAuth access token with appropriate scopes
+    ///
+    /// # Returns
+    /// * `Ok(GoogleUserInfo)` - Complete user profile information from Google
+    /// * `Err(OAuthServiceError)` - HTTP request, parsing, or validation errors
+    ///
+    /// # Errors
+    /// * `HttpError` - Network request failed or timeout occurred
+    /// * `UserInfoError` - Invalid response format or missing required fields
+    /// * `SerializationError` - JSON parsing failed
+    ///
+    /// # Required OAuth Scopes
+    /// The access token must include these scopes for successful API calls:
+    /// * `openid` - Basic OpenID Connect access
+    /// * `email` - Access to email address
+    /// * `profile` - Access to profile information
+    ///
+    /// # API Endpoint
+    /// Calls: `https://www.googleapis.com/oauth2/v2/userinfo`
+    ///
+    /// # Data Retrieved
+    /// * `id` - Google user identifier (sub claim)
+    /// * `email` - Verified email address
+    /// * `name` - Full display name
+    /// * `picture` - Profile picture URL
+    /// * `verified_email` - Email verification status
+    ///
+    /// # Privacy and Security
+    /// * Uses HTTPS for all API communications
+    /// * Respects Google's rate limiting
+    /// * Validates response data structure
+    /// * Handles missing optional fields gracefully
     ///
     /// # Returns
     /// * `OAuthServiceResult<GoogleUserInfo>` - Google user information
@@ -436,16 +607,53 @@ impl OAuthService {
         Ok(user_info)
     }
 
-    /// Create new user account or link to existing account
+    /// Creates a new user account or links OAuth provider to existing account
     ///
-    /// This method handles both new user registration and linking OAuth accounts
-    /// to existing users based on email address matching.
+    /// Implements intelligent account linking based on email address matching.
+    /// If a Google account is already linked, returns the existing user. If a user
+    /// exists with the same email, links the Google account. Otherwise, creates
+    /// a new user account with Google authentication.
     ///
     /// # Arguments
-    /// * `google_user` - Google user information
+    /// * `google_user` - Complete Google user profile information from OAuth
     ///
     /// # Returns
-    /// * `OAuthServiceResult<(User, bool)>` - User and whether it's a new account
+    /// * `Ok((User, bool))` - User object and new account flag (true = newly created)
+    /// * `Err(OAuthServiceError)` - Database operations or validation failed
+    ///
+    /// # Errors
+    /// * `DatabaseError` - User creation, linking, or transaction failed
+    /// * `AccountLinkingError` - OAuth provider association failed
+    ///
+    /// # Account Linking Logic
+    /// 1. **Existing Google Link**: Return associated user (no changes)
+    /// 2. **Email Match**: Link Google account to existing user
+    /// 3. **New User**: Create account with Google as primary authentication
+    ///
+    /// # Database Operations
+    /// * Creates user record for new accounts
+    /// * Links OAuth provider association
+    /// * Marks email as verified (trusted OAuth provider)
+    /// * Uses database transactions for atomicity
+    ///
+    /// # Security Features
+    /// * Email verification trust from OAuth provider
+    /// * Atomic operations prevent inconsistent state
+    /// * Profile picture from trusted source
+    /// * Provider-specific user ID tracking
+    ///
+    /// # Examples
+    /// ```
+    /// let google_user = GoogleUserInfo {
+    ///     id: "google_user_123".to_string(),
+    ///     email: "user@example.com".to_string(),
+    ///     name: "John Doe".to_string(),
+    ///     picture: Some("https://photo.url".to_string()),
+    ///     verified_email: true,
+    /// };
+    ///
+    /// let (user, is_new) = oauth_service.create_or_link_user(&google_user).await?;
+    /// ```
     async fn create_or_link_user(
         &self,
         google_user: &GoogleUserInfo,
@@ -551,13 +759,38 @@ impl OAuthService {
         Ok((user.into(), is_new_user))
     }
 
-    /// Clean up expired OAuth state tokens
+    /// Cleans up expired OAuth state tokens from the database
     ///
-    /// This method should be called periodically to remove expired state tokens
-    /// from the database to prevent accumulation of stale data.
+    /// Removes all state tokens that have passed their expiration time to prevent
+    /// database bloat and maintain security hygiene. This is a maintenance operation
+    /// that should be run periodically via scheduled jobs or application startup.
     ///
     /// # Returns
-    /// * `OAuthServiceResult<u64>` - Number of expired tokens removed
+    /// * `Ok(u64)` - Number of expired state tokens that were deleted
+    /// * `Err(OAuthServiceError)` - Database operation failed
+    ///
+    /// # Errors
+    /// * `DatabaseError` - Failed to execute cleanup query
+    ///
+    /// # Performance Notes
+    /// * Operation performance depends on number of expired tokens
+    /// * Consider adding database index on `expires_at` column
+    /// * Safe to run frequently as it only affects expired tokens
+    ///
+    /// # Scheduling Recommendations
+    /// * Run hourly for high-traffic applications
+    /// * Run daily for moderate-traffic applications
+    /// * Include in application health check routines
+    /// * Trigger during off-peak hours for large databases
+    ///
+    /// # Examples
+    /// ```
+    /// // Cleanup job in scheduled task
+    /// let deleted_count = oauth_service.cleanup_expired_states().await?;
+    /// if deleted_count > 0 {
+    ///     println!("Cleaned up {} expired OAuth state tokens", deleted_count);
+    /// }
+    /// ```
     pub async fn cleanup_expired_states(&self) -> OAuthServiceResult<u64> {
         let result = sqlx::query!(
             r#"
@@ -574,12 +807,51 @@ impl OAuthService {
     /// Get OAuth providers for a user
     ///
     /// Returns all OAuth provider accounts linked to the specified user.
+    /// Retrieves all OAuth providers linked to a specific user account
+    ///
+    /// Returns a list of external OAuth providers (Google, etc.) that are
+    /// associated with the user's account. Useful for account management
+    /// interfaces and security dashboards.
     ///
     /// # Arguments
-    /// * `user_id` - User ID to fetch providers for
+    /// * `user_id` - Unique identifier of the user account
     ///
     /// # Returns
-    /// * `OAuthServiceResult<Vec<OAuthProvider>>` - List of linked OAuth providers
+    /// * `Ok(Vec<OAuthProvider>)` - List of linked OAuth provider records
+    /// * `Err(OAuthServiceError)` - Database query failed
+    ///
+    /// # Errors
+    /// * `DatabaseError` - Failed to query OAuth provider associations
+    ///
+    /// # OAuth Provider Information
+    /// Each provider record includes:
+    /// * Provider type (e.g., "google")
+    /// * Provider-specific user ID
+    /// * Link creation timestamp
+    /// * Last update timestamp
+    ///
+    /// # Use Cases
+    /// * Account settings page showing linked providers
+    /// * Security dashboard displaying authentication methods
+    /// * Admin tools for user account management
+    /// * Audit trails for authentication method changes
+    ///
+    /// # Privacy Notes
+    /// * Does not expose sensitive OAuth tokens
+    /// * Only returns metadata about provider associations
+    /// * Suitable for user-facing account management interfaces
+    ///
+    /// # Examples
+    /// ```
+    /// use uuid::Uuid;
+    ///
+    /// let user_id = Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000")?;
+    /// let providers = oauth_service.get_user_oauth_providers(user_id).await?;
+    ///
+    /// for provider in providers {
+    ///     println!("Linked provider: {} (since {})", provider.provider_type, provider.created_at);
+    /// }
+    /// ```
     pub async fn get_user_oauth_providers(
         &self,
         user_id: Uuid,
@@ -601,17 +873,54 @@ impl OAuthService {
         Ok(providers)
     }
 
-    /// Remove OAuth provider link
+    /// Removes an OAuth provider association from a user account
     ///
-    /// Unlinks an OAuth provider from a user account. This does not delete the user
-    /// account itself, only removes the OAuth association.
+    /// Unlinks a specific OAuth provider (e.g., Google) from a user's account.
+    /// This operation only removes the OAuth association - the user account
+    /// itself remains intact. Used for account security management and
+    /// when users want to remove external authentication methods.
     ///
     /// # Arguments
-    /// * `user_id` - User ID
-    /// * `provider_type` - OAuth provider type to unlink
+    /// * `user_id` - Unique identifier of the user account
+    /// * `provider_type` - Type of OAuth provider to unlink (e.g., Google)
     ///
     /// # Returns
-    /// * `OAuthServiceResult<bool>` - True if provider was unlinked, false if not found
+    /// * `Ok(true)` - OAuth provider was successfully unlinked
+    /// * `Ok(false)` - No association found for the specified provider
+    /// * `Err(OAuthServiceError)` - Database operation failed
+    ///
+    /// # Errors
+    /// * `DatabaseError` - Failed to delete OAuth provider association
+    ///
+    /// # Security Considerations
+    /// * Ensure user has alternative authentication method before unlinking
+    /// * May leave user unable to sign in if it's their only auth method
+    /// * Consider requiring password authentication before unlinking
+    /// * Log unlinking events for security audit trails
+    ///
+    /// # Use Cases
+    /// * User-initiated removal of linked social accounts
+    /// * Security incident response (compromise of external provider)
+    /// * Account management and privacy controls
+    /// * Admin-initiated security actions
+    ///
+    /// # Examples
+    /// ```
+    /// use uuid::Uuid;
+    /// use user_service::models::oauth::OAuthProviderType;
+    ///
+    /// let user_id = Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000")?;
+    /// let was_unlinked = oauth_service.unlink_oauth_provider(
+    ///     user_id,
+    ///     OAuthProviderType::Google
+    /// ).await?;
+    ///
+    /// if was_unlinked {
+    ///     println!("Google account successfully unlinked");
+    /// } else {
+    ///     println!("No Google account was linked to this user");
+    /// }
+    /// ```
     pub async fn unlink_oauth_provider(
         &self,
         user_id: Uuid,

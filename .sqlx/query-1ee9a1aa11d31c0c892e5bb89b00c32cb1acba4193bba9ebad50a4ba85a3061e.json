@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE auth_rate_limits\n                SET attempt_count = $1, blocked_until = $2, updated_at = NOW()\n                WHERE id = $3\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1ee9a1aa11d31c0c892e5bb89b00c32cb1acba4193bba9ebad50a4ba85a3061e"
+}

@@ -131,6 +131,9 @@
 /// HTTP API layer with handlers and configurable routing
 pub mod api;
 
+/// Configuration management for all service settings
+pub mod config;
+
 /// Database connection management and configuration
 pub mod database;
 
@@ -168,112 +171,19 @@ pub use models::{
     EmailVerification, LoginOtp,
 };
 pub use service::{
-    EmailConfig, EmailService, JwtService, OAuthService, UserService, WebAuthnService,
+    EmailService, JwtService, OAuthService, RateLimitService, SecurityAuditService, UserService,
+    WebAuthnService,
 };
 pub use utils::error::{AppError, AppResult, ErrorResponse};
 
 // Re-export database utilities for configuration
 pub use database::{DatabaseConfig, DatabasePool};
 
-// Re-export JWT and OAuth configurations
-pub use config::{GoogleOAuthConfig, JwtConfig};
+// Re-export configuration system
+pub use config::{
+    env, AppConfig, EmailConfig, GoogleOAuthConfig, JwtConfig, OAuthConfig, SecurityConfig,
+    ServerConfig,
+};
 
 /// Library version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Default configuration constants for the service
-pub mod config {
-    /// Default HTTP server port for development
-    pub const DEFAULT_PORT: u16 = 3000;
-
-    /// Default server bind address (all interfaces)
-    pub const DEFAULT_HOST: &str = "0.0.0.0";
-
-    /// Default logging level for the application
-    pub const DEFAULT_LOG_LEVEL: &str = "info";
-
-    /// Default bcrypt cost factor for password hashing
-    /// Higher values are more secure but slower
-    pub const DEFAULT_BCRYPT_COST: u32 = 12;
-
-    /// Default access token expiration time in hours
-    pub const DEFAULT_ACCESS_TOKEN_EXPIRES_HOURS: i64 = 1;
-
-    /// Default refresh token expiration time in days
-    pub const DEFAULT_REFRESH_TOKEN_EXPIRES_DAYS: i64 = 30;
-
-    /// Default OAuth state token expiration time in minutes
-    pub const DEFAULT_OAUTH_STATE_EXPIRES_MINUTES: i64 = 10;
-
-    /// JWT configuration for authentication
-    #[derive(Debug, Clone)]
-    pub struct JwtConfig {
-        /// Secret key for signing access tokens
-        pub access_secret: String,
-        /// Secret key for signing refresh tokens
-        pub refresh_secret: String,
-        /// Access token expiration time in hours
-        pub access_token_expires_hours: i64,
-        /// Refresh token expiration time in days
-        pub refresh_token_expires_days: i64,
-    }
-
-    impl JwtConfig {
-        /// Create JWT configuration from environment variables
-        pub fn from_env() -> Result<Self, std::env::VarError> {
-            let access_secret = std::env::var("JWT_ACCESS_SECRET")?;
-            let refresh_secret = std::env::var("JWT_REFRESH_SECRET")?;
-
-            let access_token_expires_hours = std::env::var("JWT_ACCESS_EXPIRES_HOURS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(DEFAULT_ACCESS_TOKEN_EXPIRES_HOURS);
-
-            let refresh_token_expires_days = std::env::var("JWT_REFRESH_EXPIRES_DAYS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(DEFAULT_REFRESH_TOKEN_EXPIRES_DAYS);
-
-            Ok(Self {
-                access_secret,
-                refresh_secret,
-                access_token_expires_hours,
-                refresh_token_expires_days,
-            })
-        }
-    }
-
-    /// Google OAuth configuration for authentication
-    #[derive(Debug, Clone)]
-    pub struct GoogleOAuthConfig {
-        /// Google OAuth client ID
-        pub client_id: String,
-        /// Google OAuth client secret
-        pub client_secret: String,
-        /// OAuth redirect URI (callback URL)
-        pub redirect_uri: String,
-        /// OAuth state token expiration time in minutes
-        pub state_expires_minutes: i64,
-    }
-
-    impl GoogleOAuthConfig {
-        /// Create Google OAuth configuration from environment variables
-        pub fn from_env() -> Result<Self, std::env::VarError> {
-            let client_id = std::env::var("GOOGLE_CLIENT_ID")?;
-            let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")?;
-            let redirect_uri = std::env::var("GOOGLE_REDIRECT_URI")?;
-
-            let state_expires_minutes = std::env::var("OAUTH_STATE_EXPIRES_MINUTES")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(DEFAULT_OAUTH_STATE_EXPIRES_MINUTES);
-
-            Ok(Self {
-                client_id,
-                client_secret,
-                redirect_uri,
-                state_expires_minutes,
-            })
-        }
-    }
-}
