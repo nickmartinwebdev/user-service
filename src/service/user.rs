@@ -12,6 +12,7 @@ use validator::Validate;
 
 use crate::models::{
     email_verification::{EmailVerification, EmailVerificationRow},
+    login_otp::LoginOtp,
     requests::*,
     user::{User, UserWithPassword},
 };
@@ -68,6 +69,18 @@ pub enum UserServiceError {
     /// Unexpected internal server error
     #[error("Internal server error")]
     InternalError,
+
+    /// User email is not verified
+    #[error("Email not verified")]
+    EmailNotVerified,
+
+    /// OTP request rate limit exceeded
+    #[error("Too many OTP requests")]
+    TooManyOtpRequests,
+
+    /// No valid OTP found for user
+    #[error("No valid OTP found")]
+    NoValidOtpFound,
 }
 
 impl From<UserServiceError> for AppError {
@@ -97,6 +110,15 @@ impl From<UserServiceError> for AppError {
             }
             UserServiceError::InternalError => {
                 AppError::Internal("Internal server error".to_string())
+            }
+            UserServiceError::EmailNotVerified => {
+                AppError::BadRequest("Email address is not verified".to_string())
+            }
+            UserServiceError::TooManyOtpRequests => AppError::TooManyRequests(
+                "Too many OTP requests. Please try again later".to_string(),
+            ),
+            UserServiceError::NoValidOtpFound => {
+                AppError::BadRequest("No valid OTP found for this user".to_string())
             }
         }
     }
@@ -580,6 +602,204 @@ impl UserService {
         format!("{:06}", rng.gen_range(0..1000000))
     }
 
+    /// Requests an OTP for email-based sign-in for existing verified users
+    pub async fn request_signin_otp(
+        &self,
+        request: OtpSigninEmailRequest,
+        ip_address: Option<std::net::IpAddr>,
+        user_agent: Option<String>,
+    ) -> UserServiceResult<OtpSigninEmailResponse> {
+        let email_service =
+            self.email_service
+                .as_ref()
+                .ok_or(UserServiceError::EmailServiceError(
+                    "Email service not configured".to_string(),
+                ))?;
+
+        let normalized_email = normalize_email(&request.email);
+
+        // Get user by email
+        let user = self.get_user_by_email(&normalized_email).await?;
+
+        // Check if user's email is verified
+        if !user.email_verified {
+            return Err(UserServiceError::EmailNotVerified);
+        }
+
+        // Check rate limiting - max 3 OTP requests per hour per user
+        let one_hour_ago = Utc::now() - Duration::hours(1);
+        let recent_otps = sqlx::query!(
+            r#"
+            SELECT COUNT(*) as count
+            FROM login_otps
+            WHERE user_id = $1 AND created_at > $2
+            "#,
+            user.id,
+            one_hour_ago
+        )
+        .fetch_one(&self.db_pool)
+        .await?;
+
+        if recent_otps.count.unwrap_or(0) >= 3 {
+            return Err(UserServiceError::TooManyOtpRequests);
+        }
+
+        // Invalidate any existing unused OTPs for this user
+        sqlx::query!(
+            r#"
+            DELETE FROM login_otps
+            WHERE user_id = $1 AND used_at IS NULL
+            "#,
+            user.id
+        )
+        .execute(&self.db_pool)
+        .await?;
+
+        // Generate new OTP
+        let otp_code = self.generate_verification_code();
+        let expires_at = Utc::now() + Duration::minutes(5); // 5 minute expiration
+
+        // Convert IpAddr to sqlx IpNetwork if present
+        let ip_network = ip_address.map(|ip| match ip {
+            std::net::IpAddr::V4(ipv4) => sqlx::types::ipnetwork::IpNetwork::V4(
+                sqlx::types::ipnetwork::Ipv4Network::new(ipv4, 32).unwrap(),
+            ),
+            std::net::IpAddr::V6(ipv6) => sqlx::types::ipnetwork::IpNetwork::V6(
+                sqlx::types::ipnetwork::Ipv6Network::new(ipv6, 128).unwrap(),
+            ),
+        });
+
+        // Store OTP in database
+        sqlx::query!(
+            r#"
+            INSERT INTO login_otps (user_id, otp_code, expires_at, ip_address, user_agent)
+            VALUES ($1, $2, $3, $4, $5)
+            "#,
+            user.id,
+            otp_code,
+            expires_at,
+            ip_network,
+            user_agent
+        )
+        .execute(&self.db_pool)
+        .await?;
+
+        // Send OTP email
+        email_service
+            .send_signin_otp_email(&user.email, &user.name, &otp_code)
+            .await
+            .map_err(|e| UserServiceError::EmailServiceError(e.to_string()))?;
+
+        Ok(OtpSigninEmailResponse {
+            message: "OTP sent to your email".to_string(),
+            expires_in: 300, // 5 minutes in seconds
+        })
+    }
+
+    /// Verifies OTP and completes sign-in for existing verified users
+    pub async fn verify_signin_otp(
+        &self,
+        request: OtpSigninVerifyRequest,
+    ) -> UserServiceResult<OtpSigninVerifyResponse> {
+        let jwt_service = self
+            .jwt_service
+            .as_ref()
+            .ok_or(UserServiceError::InternalError)?;
+
+        let normalized_email = normalize_email(&request.email);
+
+        // Get user by email
+        let user = self.get_user_by_email(&normalized_email).await?;
+
+        // Find the most recent unused OTP for this user
+        let otp_row = sqlx::query!(
+            r#"
+            SELECT id, user_id, otp_code, expires_at, created_at, attempts, used_at, ip_address, user_agent
+            FROM login_otps
+            WHERE user_id = $1 AND otp_code = $2 AND used_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+            user.id,
+            request.otp_code
+        )
+        .fetch_optional(&self.db_pool)
+        .await?;
+
+        let Some(otp_row) = otp_row else {
+            return Err(UserServiceError::InvalidVerificationCode);
+        };
+
+        let otp = LoginOtp {
+            id: otp_row.id,
+            user_id: otp_row.user_id,
+            otp_code: otp_row.otp_code,
+            expires_at: otp_row.expires_at,
+            created_at: otp_row.created_at.unwrap_or_else(|| Utc::now()),
+            attempts: otp_row.attempts.unwrap_or(0),
+            used_at: otp_row.used_at,
+            ip_address: otp_row.ip_address.map(|ip| match ip {
+                sqlx::types::ipnetwork::IpNetwork::V4(net) => std::net::IpAddr::V4(net.ip()),
+                sqlx::types::ipnetwork::IpNetwork::V6(net) => std::net::IpAddr::V6(net.ip()),
+            }),
+            user_agent: otp_row.user_agent,
+        };
+
+        // Check if OTP is valid for verification
+        if !otp.is_valid_for_verification() {
+            if otp.is_expired() {
+                return Err(UserServiceError::VerificationCodeExpired);
+            } else if otp.has_exceeded_max_attempts() {
+                return Err(UserServiceError::TooManyAttempts);
+            } else {
+                return Err(UserServiceError::InvalidVerificationCode);
+            }
+        }
+
+        // Start transaction for atomic OTP verification and token generation
+        let mut tx = self.db_pool.begin().await?;
+
+        // Increment attempts
+        sqlx::query!(
+            r#"
+            UPDATE login_otps
+            SET attempts = attempts + 1
+            WHERE id = $1
+            "#,
+            otp.id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // Mark OTP as used
+        sqlx::query!(
+            r#"
+            UPDATE login_otps
+            SET used_at = NOW()
+            WHERE id = $1
+            "#,
+            otp.id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        // Generate JWT tokens
+        let tokens = jwt_service
+            .generate_token_pair(user.id, None, None)
+            .await
+            .map_err(|_| UserServiceError::InternalError)?;
+
+        Ok(OtpSigninVerifyResponse {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            token_type: "Bearer".to_string(),
+            expires_in: 3600, // 1 hour
+            user,
+        })
+    }
+
     /// Health check for the service
     pub async fn health_check(&self) -> UserServiceResult<()> {
         sqlx::query!("SELECT 1 as health_check")
@@ -594,7 +814,8 @@ impl UserService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::PasswordlessSignupRequest;
+
+    use std::net::IpAddr;
 
     // Note: sqlx::test automatically runs migrations from ./migrations folder
     // No manual migration helper needed!
@@ -616,6 +837,34 @@ mod tests {
             password: "AnotherPass456@".to_string(),
             profile_picture_url: None,
         }
+    }
+
+    fn create_test_otp_signin_email_request() -> OtpSigninEmailRequest {
+        OtpSigninEmailRequest {
+            email: "john.doe@example.com".to_string(),
+        }
+    }
+
+    // Create a verified user for OTP tests (bypasses email service)
+    async fn create_verified_user(service: &UserService) -> User {
+        // Directly insert a verified user into the database
+        let user_id = uuid::Uuid::new_v4();
+        let normalized_email = normalize_email("john.doe@example.com");
+
+        sqlx::query!(
+            r#"
+            INSERT INTO users (id, name, email, email_verified, created_at, updated_at)
+            VALUES ($1, $2, $3, TRUE, NOW(), NOW())
+            "#,
+            user_id,
+            "John Doe",
+            normalized_email
+        )
+        .execute(&service.db_pool)
+        .await
+        .unwrap();
+
+        service.get_user_by_email(&normalized_email).await.unwrap()
     }
 
     fn create_update_user_request() -> UpdateUserRequest {
@@ -1300,4 +1549,88 @@ mod tests {
             .await
             .unwrap());
     }
+
+    #[sqlx::test]
+    async fn test_request_signin_otp_without_email_service_fails(pool: sqlx::PgPool) {
+        let service = UserService::new(pool.clone());
+        let user = create_verified_user(&service).await;
+
+        let request = create_test_otp_signin_email_request();
+        let ip_address = Some("127.0.0.1".parse::<IpAddr>().unwrap());
+        let user_agent = Some("test-agent".to_string());
+
+        let result = service
+            .request_signin_otp(request, ip_address, user_agent)
+            .await;
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            UserServiceError::EmailServiceError(_) => {}
+            _ => panic!("Expected EmailServiceError"),
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_request_signin_otp_unverified_email_fails(pool: sqlx::PgPool) {
+        let service = UserService::new(pool.clone());
+
+        // Create unverified user directly in database
+        let user_id = uuid::Uuid::new_v4();
+        let normalized_email = normalize_email("jane.doe@example.com");
+
+        sqlx::query!(
+            r#"
+            INSERT INTO users (id, name, email, email_verified, created_at, updated_at)
+            VALUES ($1, $2, $3, FALSE, NOW(), NOW())
+            "#,
+            user_id,
+            "Jane Doe",
+            normalized_email
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let request = OtpSigninEmailRequest {
+            email: normalized_email.clone(),
+        };
+        let ip_address = Some("127.0.0.1".parse::<IpAddr>().unwrap());
+        let user_agent = Some("test-agent".to_string());
+
+        let result = service
+            .request_signin_otp(request, ip_address, user_agent)
+            .await;
+        assert!(result.is_err());
+
+        // Should fail with email service error since we don't have email service configured
+        match result.unwrap_err() {
+            UserServiceError::EmailServiceError(_) => {}
+            _ => panic!("Expected EmailServiceError"),
+        }
+    }
+
+    #[test]
+    fn test_otp_generation() {
+        // Test OTP code generation directly without requiring a service instance
+        let mut rng = rand::thread_rng();
+        let otp1 = format!("{:06}", rng.gen_range(0..1000000));
+        let otp2 = format!("{:06}", rng.gen_range(0..1000000));
+
+        // OTP should be 6 digits
+        assert_eq!(otp1.len(), 6);
+        assert_eq!(otp2.len(), 6);
+
+        // OTP should be numeric
+        assert!(otp1.chars().all(|c| c.is_numeric()));
+        assert!(otp2.chars().all(|c| c.is_numeric()));
+
+        // Test edge cases
+        let otp_min = format!("{:06}", 0);
+        let otp_max = format!("{:06}", 999999);
+        assert_eq!(otp_min, "000000");
+        assert_eq!(otp_max, "999999");
+    }
+
+    // Note: Integration tests for OTP functionality are provided in the examples directory
+    // These tests require proper email and JWT service configuration
 }

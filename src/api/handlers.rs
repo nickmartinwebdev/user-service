@@ -287,6 +287,56 @@ pub async fn verify_email(
     Ok(Json(SuccessResponse::new(response)))
 }
 
+/// Handler for requesting OTP for email-based sign-in
+///
+/// This endpoint sends an OTP code to an existing verified user's email
+/// for passwordless sign-in. The user must have a verified email address.
+pub async fn request_signin_otp(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<OtpSigninEmailRequest>,
+) -> AppResult<Json<SuccessResponse<OtpSigninEmailResponse>>> {
+    // Validate request data
+    request
+        .validate()
+        .map_err(|e| AppError::Validation(format!("Invalid OTP request data: {}", e)))?;
+
+    // Extract IP address and user agent for security logging
+    let ip_address = Some(addr.ip());
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    // Delegate to user service for OTP generation and email sending
+    let response = state
+        .user_service
+        .request_signin_otp(request, ip_address, user_agent)
+        .await?;
+
+    Ok(Json(SuccessResponse::new(response)))
+}
+
+/// Handler for verifying OTP and completing sign-in
+///
+/// This endpoint verifies the OTP code and returns authentication tokens
+/// if the code is valid and hasn't expired.
+pub async fn verify_signin_otp(
+    State(state): State<AppState>,
+    Json(request): Json<OtpSigninVerifyRequest>,
+) -> AppResult<Json<SuccessResponse<OtpSigninVerifyResponse>>> {
+    // Validate request data
+    request
+        .validate()
+        .map_err(|e| AppError::Validation(format!("Invalid OTP verification data: {}", e)))?;
+
+    // Delegate to user service for OTP verification and token generation
+    let response = state.user_service.verify_signin_otp(request).await?;
+
+    Ok(Json(SuccessResponse::new(response)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

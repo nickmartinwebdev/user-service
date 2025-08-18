@@ -141,11 +141,12 @@ pub use api::{create_routes, AppState, RouterBuilder};
 pub use models::{
     auth::{TokenPair, UserContext},
     requests::{
-        CreateUserRequest, PasswordlessSignupRequest, RefreshTokenRequest,
-        UpdateProfilePictureRequest, UpdateUserRequest, VerifyEmailRequest, VerifyPasswordRequest,
+        CreateUserRequest, OtpSigninEmailRequest, OtpSigninVerifyRequest,
+        PasswordlessSignupRequest, RefreshTokenRequest, UpdateProfilePictureRequest,
+        UpdateUserRequest, VerifyEmailRequest, VerifyPasswordRequest,
     },
     user::User,
-    EmailVerification,
+    EmailVerification, LoginOtp,
 };
 pub use service::{EmailConfig, EmailService, JwtService, UserService};
 pub use utils::error::{AppError, AppResult, ErrorResponse};
