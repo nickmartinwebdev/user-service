@@ -157,15 +157,19 @@ impl RateLimitStatus {
 }
 
 /// Database record for rate limiting
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 struct RateLimitRecord {
     id: Uuid,
+    #[allow(dead_code)]
     identifier: String,
+    #[allow(dead_code)]
     endpoint: String,
     attempt_count: i32,
     window_start: DateTime<Utc>,
     blocked_until: Option<DateTime<Utc>>,
+    #[allow(dead_code)]
     created_at: Option<DateTime<Utc>>,
+    #[allow(dead_code)]
     updated_at: Option<DateTime<Utc>>,
 }
 
@@ -567,6 +571,7 @@ mod tests {
     use super::*;
     use sqlx::PgPool;
 
+    #[allow(dead_code)]
     async fn setup_test_db() -> PgPool {
         // This would be implemented with a test database setup
         todo!("Test database setup")

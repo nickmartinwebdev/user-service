@@ -2,7 +2,7 @@
 //!
 //! Core business logic for user management operations.
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rand::Rng;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -214,6 +214,27 @@ impl UserService {
         }
     }
 
+    /// Helper method to convert validation errors to UserServiceError
+    fn validation_error(result: Result<(), validator::ValidationErrors>) -> UserServiceResult<()> {
+        result.map_err(|e| UserServiceError::ValidationError(format!("Validation failed: {}", e)))
+    }
+
+    /// Helper method to get email service or return error if not configured
+    fn require_email_service(&self) -> UserServiceResult<&Arc<EmailService>> {
+        self.email_service.as_ref().ok_or_else(|| {
+            UserServiceError::EmailServiceError(EmailServiceError::ConfigurationError(
+                "Email service not configured".to_string(),
+            ))
+        })
+    }
+
+    /// Helper method to get JWT service or return error if not configured
+    fn require_jwt_service(&self) -> UserServiceResult<&Arc<JwtService>> {
+        self.jwt_service
+            .as_ref()
+            .ok_or(UserServiceError::InternalError)
+    }
+
     /// Creates a new user account with password-based authentication
     ///
     /// Validates the request data, normalizes the email address, hashes the password
@@ -248,11 +269,13 @@ impl UserService {
     /// let user = user_service.create_user(request).await?;
     /// println!("Created user with ID: {}", user.id);
     /// ```
-    pub async fn create_user(&self, request: CreateUserRequest) -> UserServiceResult<User> {
+    pub async fn create_user(
+        &self,
+        app_id: Uuid,
+        request: CreateUserRequest,
+    ) -> UserServiceResult<User> {
         // Validate the request
-        request
-            .validate()
-            .map_err(|e| UserServiceError::ValidationError(format!("Invalid user data: {}", e)))?;
+        Self::validation_error(request.validate())?;
 
         // Normalize email
         let normalized_email = normalize_email(&request.email);
@@ -264,15 +287,16 @@ impl UserService {
         let user = sqlx::query_as!(
             UserWithPassword,
             r#"
-            INSERT INTO users (name, email, password_hash, profile_picture_url, email_verified)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            INSERT INTO users (application_id, name, email, password_hash, profile_picture_url, email_verified)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
             "#,
+            app_id,
             request.name,
             normalized_email,
             password_hash,
-            request.profile_picture_url as Option<String>,
-            true // Traditional signup considers email verified
+            request.profile_picture_url,
+            false // Email not verified for new users with passwords
         )
         .fetch_one(&self.db_pool)
         .await
@@ -322,17 +346,16 @@ impl UserService {
     ///     profile_picture_url: Some(Some("https://example.com/new-avatar.jpg".to_string())),
     /// };
     ///
-    /// let updated_user = user_service.update_user(user_id, request).await?;
+    /// let updated_user = user_service.update_user(app_id, user_id, request).await?;
     /// ```
     pub async fn update_user(
         &self,
+        app_id: Uuid,
         user_id: Uuid,
         request: UpdateUserRequest,
     ) -> UserServiceResult<User> {
         // Validate the request
-        request.validate().map_err(|e| {
-            UserServiceError::ValidationError(format!("Invalid update data: {}", e))
-        })?;
+        Self::validation_error(request.validate())?;
 
         // Normalize email if provided
         let normalized_email = request.email.as_ref().map(|email| normalize_email(email));
@@ -343,13 +366,14 @@ impl UserService {
             r#"
             UPDATE users
             SET
-                name = COALESCE($2, name),
-                email = COALESCE($3, email),
-                profile_picture_url = COALESCE($4, profile_picture_url),
+                name = COALESCE($3, name),
+                email = COALESCE($4, email),
+                profile_picture_url = COALESCE($5, profile_picture_url),
                 updated_at = NOW()
-            WHERE id = $1
-            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            WHERE application_id = $1 AND id = $2
+            RETURNING id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
             "#,
+            app_id,
             user_id,
             request.name as Option<String>,
             normalized_email as Option<String>,
@@ -360,7 +384,7 @@ impl UserService {
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => UserServiceError::UserNotFound,
             sqlx::Error::Database(db_err) => {
-                if db_err.constraint() == Some("users_email_key") {
+                if db_err.constraint() == Some("idx_users_app_email_unique") {
                     UserServiceError::EmailAlreadyExists
                 } else {
                     UserServiceError::DatabaseError(sqlx::Error::Database(db_err))
@@ -396,14 +420,15 @@ impl UserService {
     /// let user = user_service.get_user_by_id(user_id).await?;
     /// println!("Found user: {}", user.name);
     /// ```
-    pub async fn get_user_by_id(&self, user_id: Uuid) -> UserServiceResult<User> {
+    pub async fn get_user_by_id(&self, app_id: Uuid, user_id: Uuid) -> UserServiceResult<User> {
         let user = sqlx::query_as!(
             UserWithPassword,
             r#"
-            SELECT id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            SELECT id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
             FROM users
-            WHERE id = $1
+            WHERE application_id = $1 AND id = $2
             "#,
+            app_id,
             user_id
         )
         .fetch_one(&self.db_pool)
@@ -438,16 +463,17 @@ impl UserService {
     /// // Finds user even with different casing
     /// assert_eq!(user.email, "john@example.com");
     /// ```
-    pub async fn get_user_by_email(&self, email: &str) -> UserServiceResult<User> {
+    pub async fn get_user_by_email(&self, app_id: Uuid, email: &str) -> UserServiceResult<User> {
         let normalized_email = normalize_email(email);
 
         let user = sqlx::query_as!(
             UserWithPassword,
             r#"
-            SELECT id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            SELECT id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
             FROM users
-            WHERE email = $1
+            WHERE application_id = $1 AND email = $2
             "#,
+            app_id,
             normalized_email
         )
         .fetch_one(&self.db_pool)
@@ -493,14 +519,23 @@ impl UserService {
     ///     println!("Password is correct");
     /// }
     /// ```
-    pub async fn verify_password(&self, user_id: Uuid, password: &str) -> UserServiceResult<bool> {
-        let password_row = sqlx::query!("SELECT password_hash FROM users WHERE id = $1", user_id)
-            .fetch_one(&self.db_pool)
-            .await
-            .map_err(|e| match e {
-                sqlx::Error::RowNotFound => UserServiceError::UserNotFound,
-                _ => UserServiceError::DatabaseError(e),
-            })?;
+    pub async fn verify_password(
+        &self,
+        app_id: Uuid,
+        user_id: Uuid,
+        password: &str,
+    ) -> UserServiceResult<bool> {
+        let password_row = sqlx::query!(
+            "SELECT password_hash FROM users WHERE application_id = $1 AND id = $2",
+            app_id,
+            user_id
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => UserServiceError::UserNotFound,
+            _ => UserServiceError::DatabaseError(e),
+        })?;
 
         if let Some(password_hash) = password_row.password_hash {
             let is_valid = verify_password(password, &password_hash)?;
@@ -539,10 +574,11 @@ impl UserService {
     ///     profile_picture_url: Some("https://example.com/avatar.jpg".to_string()),
     /// };
     ///
-    /// let updated_user = user_service.update_profile_picture(user_id, request).await?;
+    /// let updated_user = user_service.update_profile_picture(app_id, user_id, request).await?;
     /// ```
     pub async fn update_profile_picture(
         &self,
+        app_id: Uuid,
         user_id: Uuid,
         request: UpdateProfilePictureRequest,
     ) -> UserServiceResult<User> {
@@ -555,12 +591,59 @@ impl UserService {
             UserWithPassword,
             r#"
             UPDATE users
-            SET profile_picture_url = $2, updated_at = NOW()
-            WHERE id = $1
-            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            SET profile_picture_url = $3, updated_at = NOW()
+            WHERE application_id = $1 AND id = $2
+            RETURNING id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
             "#,
+            app_id,
             user_id,
-            request.profile_picture_url as Option<String>
+            request.profile_picture_url
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => UserServiceError::UserNotFound,
+            _ => UserServiceError::DatabaseError(e),
+        })?;
+
+        Ok(user.into())
+    }
+
+    /// Updates a user's profile picture
+    ///
+    /// Sets the profile picture URL to the provided value. Pass None to remove
+    /// the profile picture entirely.
+    ///
+    /// # Arguments
+    /// * `app_id` - Application ID for tenant isolation
+    /// * `user_id` - Unique identifier of the user
+    /// * `profile_picture_url` - New profile picture URL or None to remove
+    ///
+    /// # Returns
+    /// * `Ok(User)` - The updated user object
+    /// * `Err(UserServiceError)` - User not found or database error
+    ///
+    /// # Errors
+    /// * `UserNotFound` - No user exists with the provided ID in this application
+    /// * `DatabaseError` - Database update failed
+    #[allow(dead_code)]
+    async fn update_profile_picture_legacy(
+        &self,
+        app_id: Uuid,
+        user_id: Uuid,
+        profile_picture_url: Option<String>,
+    ) -> UserServiceResult<User> {
+        let user = sqlx::query_as!(
+            UserWithPassword,
+            r#"
+            UPDATE users
+            SET profile_picture_url = $3, updated_at = NOW()
+            WHERE application_id = $1 AND id = $2
+            RETURNING id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
+            "#,
+            app_id,
+            user_id,
+            profile_picture_url
         )
         .fetch_one(&self.db_pool)
         .await
@@ -596,15 +679,20 @@ impl UserService {
     /// let user = user_service.remove_profile_picture(user_id).await?;
     /// assert!(user.profile_picture_url.is_none());
     /// ```
-    pub async fn remove_profile_picture(&self, user_id: Uuid) -> UserServiceResult<User> {
+    pub async fn remove_profile_picture(
+        &self,
+        app_id: Uuid,
+        user_id: Uuid,
+    ) -> UserServiceResult<User> {
         let user = sqlx::query_as!(
             UserWithPassword,
             r#"
             UPDATE users
             SET profile_picture_url = NULL, updated_at = NOW()
-            WHERE id = $1
-            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            WHERE application_id = $1 AND id = $2
+            RETURNING id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
             "#,
+            app_id,
             user_id
         )
         .fetch_one(&self.db_pool)
@@ -657,22 +745,14 @@ impl UserService {
     /// ```
     pub async fn passwordless_signup(
         &self,
+        app_id: Uuid,
         request: PasswordlessSignupRequest,
     ) -> UserServiceResult<PasswordlessSignupResponse> {
         // Validate the request
-        request
-            .validate()
-            .map_err(|e| UserServiceError::ValidationError(format!("Invalid user data: {}", e)))?;
+        Self::validation_error(request.validate())?;
 
         // Check if email service is available
-        let email_service =
-            self.email_service
-                .as_ref()
-                .ok_or(UserServiceError::EmailServiceError(
-                    EmailServiceError::ConfigurationError(
-                        "Email service not configured".to_string(),
-                    ),
-                ))?;
+        let email_service = self.require_email_service()?;
 
         // Normalize email
         let normalized_email = normalize_email(&request.email);
@@ -681,10 +761,11 @@ impl UserService {
         let user = sqlx::query_as!(
             UserWithPassword,
             r#"
-            INSERT INTO users (name, email, password_hash, email_verified)
-            VALUES ($1, $2, NULL, FALSE)
-            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            INSERT INTO users (application_id, name, email, email_verified)
+            VALUES ($1, $2, $3, FALSE)
+            RETURNING id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
             "#,
+            app_id,
             request.name,
             normalized_email,
         )
@@ -692,7 +773,7 @@ impl UserService {
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(db_err) => {
-                if db_err.constraint() == Some("users_email_key") {
+                if db_err.constraint() == Some("idx_users_app_email_unique") {
                     UserServiceError::EmailAlreadyExists
                 } else {
                     UserServiceError::DatabaseError(sqlx::Error::Database(db_err))
@@ -777,28 +858,14 @@ impl UserService {
     /// ```
     pub async fn verify_email(
         &self,
+        app_id: Uuid,
         request: VerifyEmailRequest,
     ) -> UserServiceResult<VerifyEmailResponse> {
         // Validate the request
-        request
-            .validate()
-            .map_err(|e| UserServiceError::ValidationError(format!("Invalid request: {}", e)))?;
+        Self::validation_error(request.validate())?;
 
-        let jwt_service = self
-            .jwt_service
-            .as_ref()
-            .ok_or(UserServiceError::JwtServiceError(
-                JwtServiceError::InternalError("JWT service not configured".to_string()),
-            ))?;
-
-        let email_service =
-            self.email_service
-                .as_ref()
-                .ok_or(UserServiceError::EmailServiceError(
-                    EmailServiceError::ConfigurationError(
-                        "Email service not configured".to_string(),
-                    ),
-                ))?;
+        let jwt_service = self.require_jwt_service()?;
+        let email_service = self.require_email_service()?;
 
         let normalized_email = normalize_email(&request.email);
 
@@ -806,10 +873,11 @@ impl UserService {
         let user = sqlx::query_as!(
             UserWithPassword,
             r#"
-            SELECT id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            SELECT id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
             FROM users
-            WHERE email = $1
+            WHERE application_id = $1 AND email = $2
             "#,
+            app_id,
             normalized_email
         )
         .fetch_one(&self.db_pool)
@@ -825,10 +893,11 @@ impl UserService {
             r#"
             SELECT id, user_id, verification_code, expires_at, created_at, attempts, verified_at
             FROM email_verifications
-            WHERE user_id = $1 AND verification_code = $2
+            WHERE application_id = $1 AND user_id = $2 AND verification_code = $3
             ORDER BY created_at DESC
             LIMIT 1
             "#,
+            app_id,
             user.id,
             request.verification_code
         )
@@ -885,9 +954,10 @@ impl UserService {
             r#"
             UPDATE users
             SET email_verified = TRUE, updated_at = NOW()
-            WHERE id = $1
-            RETURNING id, name, email, password_hash, profile_picture_url, email_verified, created_at, updated_at
+            WHERE application_id = $1 AND id = $2
+            RETURNING id, application_id, name, email, profile_picture_url, email_verified, created_at as "created_at!", updated_at as "updated_at!"
             "#,
+            app_id,
             user.id
         )
         .fetch_one(&mut *tx)
@@ -897,7 +967,7 @@ impl UserService {
 
         // Generate tokens
         let tokens = jwt_service
-            .generate_token_pair(updated_user.id, None, None)
+            .generate_token_pair(app_id, updated_user.id, None, None)
             .await
             .map_err(|_| UserServiceError::InternalError)?;
 
@@ -976,23 +1046,17 @@ impl UserService {
     /// ```
     pub async fn request_signin_otp(
         &self,
+        app_id: Uuid,
         request: OtpSigninEmailRequest,
         ip_address: Option<std::net::IpAddr>,
         user_agent: Option<String>,
     ) -> UserServiceResult<OtpSigninEmailResponse> {
-        let email_service =
-            self.email_service
-                .as_ref()
-                .ok_or(UserServiceError::EmailServiceError(
-                    EmailServiceError::ConfigurationError(
-                        "Email service not configured".to_string(),
-                    ),
-                ))?;
+        let email_service = self.require_email_service()?;
 
         let normalized_email = normalize_email(&request.email);
 
         // Get user by email
-        let user = self.get_user_by_email(&normalized_email).await?;
+        let user = self.get_user_by_email(app_id, &normalized_email).await?;
 
         // Check if user's email is verified
         if !user.email_verified {
@@ -1005,8 +1069,9 @@ impl UserService {
             r#"
             SELECT COUNT(*) as count
             FROM login_otps
-            WHERE user_id = $1 AND created_at > $2
+            WHERE application_id = $1 AND user_id = $2 AND created_at > $3
             "#,
+            app_id,
             user.id,
             one_hour_ago
         )
@@ -1045,9 +1110,10 @@ impl UserService {
         // Store OTP in database
         sqlx::query!(
             r#"
-            INSERT INTO login_otps (user_id, otp_code, expires_at, ip_address, user_agent)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO login_otps (application_id, user_id, otp_code, expires_at, ip_address, user_agent)
+            VALUES ($1, $2, $3, $4, $5, $6)
             "#,
+            app_id,
             user.id,
             otp_code,
             expires_at,
@@ -1110,27 +1176,26 @@ impl UserService {
     /// ```
     pub async fn verify_signin_otp(
         &self,
+        app_id: Uuid,
         request: OtpSigninVerifyRequest,
     ) -> UserServiceResult<OtpSigninVerifyResponse> {
-        let jwt_service = self
-            .jwt_service
-            .as_ref()
-            .ok_or(UserServiceError::InternalError)?;
+        let jwt_service = self.require_jwt_service()?;
 
         let normalized_email = normalize_email(&request.email);
 
         // Get user by email
-        let user = self.get_user_by_email(&normalized_email).await?;
+        let user = self.get_user_by_email(app_id, &normalized_email).await?;
 
         // Find the most recent unused OTP for this user
         let otp_row = sqlx::query!(
             r#"
-            SELECT id, user_id, otp_code, expires_at, created_at, attempts, used_at, ip_address, user_agent
+            SELECT id, user_id, otp_code, expires_at as "expires_at!", created_at as "created_at!", attempts, used_at as "used_at?: DateTime<Utc>", ip_address, user_agent
             FROM login_otps
-            WHERE user_id = $1 AND otp_code = $2 AND used_at IS NULL
+            WHERE application_id = $1 AND user_id = $2 AND otp_code = $3 AND used_at IS NULL
             ORDER BY created_at DESC
             LIMIT 1
             "#,
+            app_id,
             user.id,
             request.otp_code
         )
@@ -1146,8 +1211,8 @@ impl UserService {
             user_id: otp_row.user_id,
             otp_code: otp_row.otp_code,
             expires_at: otp_row.expires_at,
-            created_at: otp_row.created_at.unwrap_or_else(|| Utc::now()),
-            attempts: otp_row.attempts.unwrap_or(0),
+            created_at: otp_row.created_at,
+            attempts: otp_row.attempts,
             used_at: otp_row.used_at,
             ip_address: otp_row.ip_address.map(|ip| match ip {
                 sqlx::types::ipnetwork::IpNetwork::V4(net) => std::net::IpAddr::V4(net.ip()),
@@ -1197,7 +1262,9 @@ impl UserService {
         tx.commit().await?;
 
         // Generate JWT tokens
-        let tokens = jwt_service.generate_token_pair(user.id, None, None).await?;
+        let tokens = jwt_service
+            .generate_token_pair(app_id, user.id, None, None)
+            .await?;
 
         Ok(OtpSigninVerifyResponse {
             access_token: tokens.access_token,
@@ -1245,6 +1312,7 @@ impl UserService {
     /// * `Result<crate::models::auth::TokenPair, AppError>` - JWT token pair or error
     pub async fn generate_tokens(
         &self,
+        app_id: Uuid,
         user: &User,
     ) -> UserServiceResult<crate::models::auth::TokenPair> {
         let jwt_service = self
@@ -1255,7 +1323,7 @@ impl UserService {
             ))?;
 
         jwt_service
-            .generate_token_pair(user.id, None, None)
+            .generate_token_pair(app_id, user.id, None, None)
             .await
             .map_err(UserServiceError::JwtServiceError)
     }
@@ -1314,7 +1382,10 @@ mod tests {
         .await
         .unwrap();
 
-        service.get_user_by_email(&normalized_email).await.unwrap()
+        service
+            .get_user_by_email(get_test_app_id(), &normalized_email)
+            .await
+            .unwrap()
     }
 
     fn create_update_user_request() -> UpdateUserRequest {
@@ -1323,6 +1394,11 @@ mod tests {
             email: Some("john.updated@example.com".to_string()),
             profile_picture_url: Some("https://example.com/new-avatar.jpg".to_string()),
         }
+    }
+
+    // Test helper to get a default app_id for testing
+    fn get_test_app_id() -> Uuid {
+        Uuid::parse_str("018d4a3d-7f2e-7b5a-9c1d-2e3f4a5b6c7d").unwrap()
     }
 
     // ============================================================================
@@ -1352,7 +1428,10 @@ mod tests {
         let service = UserService::new(pool);
         let request = create_test_user_request();
 
-        let user = service.create_user(request.clone()).await.unwrap();
+        let user = service
+            .create_user(get_test_app_id(), request.clone())
+            .await
+            .unwrap();
 
         assert_eq!(user.name, request.name);
         assert_eq!(user.email, "john.doe@example.com"); // normalized
@@ -1367,7 +1446,10 @@ mod tests {
         let service = UserService::new(pool);
         let request = create_test_user_request_minimal();
 
-        let user = service.create_user(request.clone()).await.unwrap();
+        let user = service
+            .create_user(get_test_app_id(), request.clone())
+            .await
+            .unwrap();
 
         assert_eq!(user.name, request.name);
         assert_eq!(user.email, "jane.smith@example.com");
@@ -1380,7 +1462,10 @@ mod tests {
         let mut request = create_test_user_request();
         request.email = "JOHN.DOE@EXAMPLE.COM".to_string();
 
-        let user = service.create_user(request).await.unwrap();
+        let user = service
+            .create_user(get_test_app_id(), request)
+            .await
+            .unwrap();
 
         assert_eq!(user.email, "john.doe@example.com");
     }
@@ -1391,17 +1476,20 @@ mod tests {
         let request = create_test_user_request();
         let original_password = request.password.clone();
 
-        let user = service.create_user(request).await.unwrap();
+        let user = service
+            .create_user(get_test_app_id(), request)
+            .await
+            .unwrap();
 
         // Verify password can be verified but isn't stored in plain text
         let password_valid = service
-            .verify_password(user.id, &original_password)
+            .verify_password(get_test_app_id(), user.id, &original_password)
             .await
             .unwrap();
         assert!(password_valid);
 
         let password_invalid = service
-            .verify_password(user.id, "wrong_password")
+            .verify_password(get_test_app_id(), user.id, "wrong_password")
             .await
             .unwrap();
         assert!(!password_invalid);
@@ -1415,10 +1503,13 @@ mod tests {
         request2.name = "Different Name".to_string();
 
         // Create first user
-        service.create_user(request1).await.unwrap();
+        service
+            .create_user(get_test_app_id(), request1)
+            .await
+            .unwrap();
 
         // Attempt to create second user with same email
-        let result = service.create_user(request2).await;
+        let result = service.create_user(get_test_app_id(), request2).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             UserServiceError::EmailAlreadyExists => {}
@@ -1435,10 +1526,13 @@ mod tests {
         request2.name = "Different Name".to_string();
 
         // Create first user
-        service.create_user(request1).await.unwrap();
+        service
+            .create_user(get_test_app_id(), request1)
+            .await
+            .unwrap();
 
         // Attempt to create second user with same email (different case)
-        let result = service.create_user(request2).await;
+        let result = service.create_user(get_test_app_id(), request2).await;
         assert!(result.is_err());
     }
 
@@ -1448,7 +1542,7 @@ mod tests {
         let mut request = create_test_user_request();
         request.email = "invalid-email".to_string();
 
-        let result = service.create_user(request).await;
+        let result = service.create_user(get_test_app_id(), request).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             UserServiceError::ValidationError(_) => {}
@@ -1462,7 +1556,7 @@ mod tests {
         let mut request = create_test_user_request();
         request.name = "".to_string();
 
-        let result = service.create_user(request).await;
+        let result = service.create_user(get_test_app_id(), request).await;
         assert!(result.is_err());
     }
 
@@ -1472,7 +1566,7 @@ mod tests {
         let mut request = create_test_user_request();
         request.name = "a".repeat(256);
 
-        let result = service.create_user(request).await;
+        let result = service.create_user(get_test_app_id(), request).await;
         assert!(result.is_err());
     }
 
@@ -1482,7 +1576,7 @@ mod tests {
         let mut request = create_test_user_request();
         request.password = "weak".to_string();
 
-        let result = service.create_user(request).await;
+        let result = service.create_user(get_test_app_id(), request).await;
         assert!(result.is_err());
     }
 
@@ -1492,7 +1586,7 @@ mod tests {
         let mut request = create_test_user_request();
         request.password = "Short1!".to_string();
 
-        let result = service.create_user(request).await;
+        let result = service.create_user(get_test_app_id(), request).await;
         assert!(result.is_err());
     }
 
@@ -1502,7 +1596,7 @@ mod tests {
         let mut request = create_test_user_request();
         request.password = format!("{}1!A", "a".repeat(126));
 
-        let result = service.create_user(request).await;
+        let result = service.create_user(get_test_app_id(), request).await;
         assert!(result.is_err());
     }
 
@@ -1512,7 +1606,7 @@ mod tests {
         let mut request = create_test_user_request();
         request.profile_picture_url = Some("not-a-valid-url".to_string());
 
-        let result = service.create_user(request).await;
+        let result = service.create_user(get_test_app_id(), request).await;
         assert!(result.is_err());
     }
 
@@ -1525,8 +1619,14 @@ mod tests {
         let service = UserService::new(pool);
         let request = create_test_user_request();
 
-        let created_user = service.create_user(request.clone()).await.unwrap();
-        let retrieved_user = service.get_user_by_id(created_user.id).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), request.clone())
+            .await
+            .unwrap();
+        let retrieved_user = service
+            .get_user_by_id(get_test_app_id(), created_user.id)
+            .await
+            .unwrap();
 
         assert_eq!(created_user.id, retrieved_user.id);
         assert_eq!(created_user.name, retrieved_user.name);
@@ -1542,7 +1642,9 @@ mod tests {
         let service = UserService::new(pool);
         let non_existent_id = uuid::Uuid::new_v4();
 
-        let result = service.get_user_by_id(non_existent_id).await;
+        let result = service
+            .get_user_by_id(get_test_app_id(), non_existent_id)
+            .await;
         assert!(result.is_err());
         match result.unwrap_err() {
             UserServiceError::UserNotFound => {}
@@ -1555,8 +1657,14 @@ mod tests {
         let service = UserService::new(pool);
         let request = create_test_user_request();
 
-        let created_user = service.create_user(request.clone()).await.unwrap();
-        let retrieved_user = service.get_user_by_email(&request.email).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), request.clone())
+            .await
+            .unwrap();
+        let retrieved_user = service
+            .get_user_by_email(get_test_app_id(), &request.email)
+            .await
+            .unwrap();
 
         assert_eq!(created_user.id, retrieved_user.id);
         assert_eq!(created_user.email, retrieved_user.email);
@@ -1567,9 +1675,12 @@ mod tests {
         let service = UserService::new(pool);
         let request = create_test_user_request();
 
-        let created_user = service.create_user(request).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), request)
+            .await
+            .unwrap();
         let retrieved_user = service
-            .get_user_by_email("JOHN.DOE@EXAMPLE.COM")
+            .get_user_by_email(get_test_app_id(), "JOHN.DOE@EXAMPLE.COM")
             .await
             .unwrap();
 
@@ -1580,7 +1691,9 @@ mod tests {
     async fn test_get_user_by_email_not_found(pool: sqlx::PgPool) {
         let service = UserService::new(pool);
 
-        let result = service.get_user_by_email("nonexistent@example.com").await;
+        let result = service
+            .get_user_by_email(get_test_app_id(), "nonexistent@example.com")
+            .await;
         assert!(result.is_err());
         match result.unwrap_err() {
             UserServiceError::UserNotFound => {}
@@ -1598,23 +1711,25 @@ mod tests {
         let create_request = create_test_user_request();
         let update_request = create_update_user_request();
 
-        let created_user = service.create_user(create_request).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), create_request)
+            .await
+            .unwrap();
         let original_created_at = created_user.created_at;
 
         // Small delay to ensure updated_at changes
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         let updated_user = service
-            .update_user(created_user.id, update_request.clone())
+            .update_user(get_test_app_id(), created_user.id, update_request.clone())
             .await
             .unwrap();
 
-        assert_eq!(updated_user.id, created_user.id);
-        assert_eq!(updated_user.name, update_request.name.unwrap());
-        assert_eq!(updated_user.email, update_request.email.unwrap());
+        assert_eq!(updated_user.name, update_request.name.clone().unwrap());
+        assert_eq!(updated_user.email, update_request.email.clone().unwrap());
         assert_eq!(
             updated_user.profile_picture_url,
-            update_request.profile_picture_url
+            update_request.profile_picture_url.clone()
         );
         assert_eq!(updated_user.created_at, original_created_at); // Should not change
         assert!(updated_user.updated_at > created_user.updated_at); // Should be updated
@@ -1625,7 +1740,10 @@ mod tests {
         let service = UserService::new(pool);
         let create_request = create_test_user_request();
 
-        let created_user = service.create_user(create_request.clone()).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), create_request.clone())
+            .await
+            .unwrap();
 
         let update_request = UpdateUserRequest {
             name: Some("Updated Name".to_string()),
@@ -1634,7 +1752,7 @@ mod tests {
         };
 
         let updated_user = service
-            .update_user(created_user.id, update_request)
+            .update_user(get_test_app_id(), created_user.id, update_request)
             .await
             .unwrap();
 
@@ -1649,10 +1767,12 @@ mod tests {
     #[sqlx::test]
     async fn test_update_user_not_found(pool: sqlx::PgPool) {
         let service = UserService::new(pool);
-        let update_request = create_update_user_request();
         let non_existent_id = uuid::Uuid::new_v4();
+        let update_request = create_update_user_request();
 
-        let result = service.update_user(non_existent_id, update_request).await;
+        let result = service
+            .update_user(get_test_app_id(), non_existent_id, update_request)
+            .await;
         assert!(result.is_err());
         match result.unwrap_err() {
             UserServiceError::UserNotFound => {}
@@ -1666,22 +1786,23 @@ mod tests {
 
         // Create two users
         let user1 = service
-            .create_user(create_test_user_request())
+            .create_user(get_test_app_id(), create_test_user_request())
             .await
             .unwrap();
         let user2 = service
-            .create_user(create_test_user_request_minimal())
+            .create_user(get_test_app_id(), create_test_user_request_minimal())
             .await
             .unwrap();
 
-        // Try to update user2 with user1's email
         let update_request = UpdateUserRequest {
             name: None,
-            email: Some(user1.email),
+            email: Some(user1.email.clone()),
             profile_picture_url: None,
         };
 
-        let result = service.update_user(user2.id, update_request).await;
+        let result = service
+            .update_user(get_test_app_id(), user2.id, update_request)
+            .await;
         assert!(result.is_err());
         match result.unwrap_err() {
             UserServiceError::EmailAlreadyExists => {}
@@ -1699,8 +1820,14 @@ mod tests {
         let request = create_test_user_request();
         let password = request.password.clone();
 
-        let user = service.create_user(request).await.unwrap();
-        let is_valid = service.verify_password(user.id, &password).await.unwrap();
+        let user = service
+            .create_user(get_test_app_id(), request)
+            .await
+            .unwrap();
+        let is_valid = service
+            .verify_password(get_test_app_id(), user.id, &password)
+            .await
+            .unwrap();
 
         assert!(is_valid);
     }
@@ -1710,9 +1837,12 @@ mod tests {
         let service = UserService::new(pool);
         let request = create_test_user_request();
 
-        let user = service.create_user(request).await.unwrap();
+        let user = service
+            .create_user(get_test_app_id(), request)
+            .await
+            .unwrap();
         let is_valid = service
-            .verify_password(user.id, "WrongPassword123!")
+            .verify_password(get_test_app_id(), user.id, "WrongPassword123!")
             .await
             .unwrap();
 
@@ -1725,7 +1855,7 @@ mod tests {
         let non_existent_id = uuid::Uuid::new_v4();
 
         let result = service
-            .verify_password(non_existent_id, "SomePassword123!")
+            .verify_password(get_test_app_id(), non_existent_id, "SomePassword123!")
             .await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -1743,14 +1873,17 @@ mod tests {
         let service = UserService::new(pool);
         let create_request = create_test_user_request();
 
-        let created_user = service.create_user(create_request).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), create_request)
+            .await
+            .unwrap();
 
         let update_request = UpdateProfilePictureRequest {
             profile_picture_url: Some("https://example.com/new-pic.jpg".to_string()),
         };
 
         let updated_user = service
-            .update_profile_picture(created_user.id, update_request)
+            .update_profile_picture(get_test_app_id(), created_user.id, update_request)
             .await
             .unwrap();
 
@@ -1766,14 +1899,17 @@ mod tests {
         let service = UserService::new(pool);
         let create_request = create_test_user_request();
 
-        let created_user = service.create_user(create_request).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), create_request)
+            .await
+            .unwrap();
 
         let update_request = UpdateProfilePictureRequest {
             profile_picture_url: None,
         };
 
         let updated_user = service
-            .update_profile_picture(created_user.id, update_request)
+            .update_profile_picture(get_test_app_id(), created_user.id, update_request)
             .await
             .unwrap();
 
@@ -1781,7 +1917,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_update_profile_picture_user_not_found(pool: sqlx::PgPool) {
+    async fn test_update_profile_picture_not_found(pool: sqlx::PgPool) {
         let service = UserService::new(pool);
         let non_existent_id = uuid::Uuid::new_v4();
 
@@ -1790,7 +1926,7 @@ mod tests {
         };
 
         let result = service
-            .update_profile_picture(non_existent_id, update_request)
+            .update_profile_picture(get_test_app_id(), non_existent_id, update_request)
             .await;
         assert!(result.is_err());
     }
@@ -1800,9 +1936,12 @@ mod tests {
         let service = UserService::new(pool);
         let create_request = create_test_user_request();
 
-        let created_user = service.create_user(create_request).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), create_request)
+            .await
+            .unwrap();
         let updated_user = service
-            .remove_profile_picture(created_user.id)
+            .remove_profile_picture(get_test_app_id(), created_user.id)
             .await
             .unwrap();
 
@@ -1815,9 +1954,12 @@ mod tests {
         let service = UserService::new(pool);
         let create_request = create_test_user_request_minimal(); // No profile picture
 
-        let created_user = service.create_user(create_request).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), create_request)
+            .await
+            .unwrap();
         let updated_user = service
-            .remove_profile_picture(created_user.id)
+            .remove_profile_picture(get_test_app_id(), created_user.id)
             .await
             .unwrap();
 
@@ -1829,7 +1971,9 @@ mod tests {
         let service = UserService::new(pool);
         let non_existent_id = uuid::Uuid::new_v4();
 
-        let result = service.remove_profile_picture(non_existent_id).await;
+        let result = service
+            .remove_profile_picture(get_test_app_id(), non_existent_id)
+            .await;
         assert!(result.is_err());
     }
 
@@ -1855,16 +1999,22 @@ mod tests {
 
         // Create user
         let create_request = create_test_user_request();
-        let created_user = service.create_user(create_request.clone()).await.unwrap();
+        let created_user = service
+            .create_user(get_test_app_id(), create_request)
+            .await
+            .unwrap();
 
         // Retrieve by ID
-        let retrieved_user = service.get_user_by_id(created_user.id).await.unwrap();
+        let retrieved_user = service
+            .get_user_by_id(get_test_app_id(), created_user.id)
+            .await
+            .unwrap();
         assert_eq!(created_user.id, retrieved_user.id);
         assert_eq!(created_user.name, retrieved_user.name);
 
         // Retrieve by email
         let retrieved_by_email = service
-            .get_user_by_email(&created_user.email)
+            .get_user_by_email(get_test_app_id(), &created_user.email)
             .await
             .unwrap();
         assert_eq!(created_user.id, retrieved_by_email.id);
@@ -1872,15 +2022,18 @@ mod tests {
         // Update user
         let update_request = create_update_user_request();
         let updated_user = service
-            .update_user(created_user.id, update_request.clone())
+            .update_user(get_test_app_id(), created_user.id, update_request)
             .await
             .unwrap();
-        assert_eq!(updated_user.name, update_request.name.clone().unwrap());
+        assert_eq!(updated_user.name, "Jane Smith");
 
         // Verify update persisted
-        let final_user = service.get_user_by_id(created_user.id).await.unwrap();
-        assert_eq!(final_user.name, update_request.name.unwrap());
-        assert_eq!(final_user.email, update_request.email.unwrap());
+        let final_user = service
+            .get_user_by_id(get_test_app_id(), created_user.id)
+            .await
+            .unwrap();
+        assert_eq!(final_user.name, "John Updated".to_string());
+        assert_eq!(final_user.email, "john.updated@example.com".to_string());
     }
 
     #[sqlx::test]
@@ -1906,13 +2059,19 @@ mod tests {
 
         let mut users = vec![];
         for request in requests {
-            let user = service.create_user(request).await.unwrap();
+            let user = service
+                .create_user(get_test_app_id(), request)
+                .await
+                .unwrap();
             users.push(user);
         }
 
         // Verify all users can be retrieved
         for user in &users {
-            let retrieved = service.get_user_by_id(user.id).await.unwrap();
+            let retrieved = service
+                .get_user_by_id(get_test_app_id(), user.id)
+                .await
+                .unwrap();
             assert_eq!(user.id, retrieved.id);
             assert_eq!(user.email, retrieved.email);
         }
@@ -1937,26 +2096,32 @@ mod tests {
             profile_picture_url: None,
         };
 
-        let user1 = service.create_user(request1).await.unwrap();
-        let user2 = service.create_user(request2).await.unwrap();
+        let user1 = service
+            .create_user(get_test_app_id(), request1)
+            .await
+            .unwrap();
+        let user2 = service
+            .create_user(get_test_app_id(), request2)
+            .await
+            .unwrap();
 
         // Both should be able to verify their passwords
         assert!(service
-            .verify_password(user1.id, "SamePassword123!")
+            .verify_password(get_test_app_id(), user1.id, "SamePassword123!")
             .await
             .unwrap());
         assert!(service
-            .verify_password(user2.id, "SamePassword123!")
+            .verify_password(get_test_app_id(), user2.id, "SamePassword123!")
             .await
             .unwrap());
 
         // Cross-verification should fail (different salts)
         assert!(!service
-            .verify_password(user1.id, "WrongPassword")
+            .verify_password(get_test_app_id(), user1.id, "WrongPassword")
             .await
             .unwrap());
         assert!(!service
-            .verify_password(user2.id, "WrongPassword")
+            .verify_password(get_test_app_id(), user2.id, "WrongPassword")
             .await
             .unwrap());
     }
@@ -1973,7 +2138,7 @@ mod tests {
             profile_picture_url: Some(format!("https://example.com/{}", "a".repeat(480))), // ~512 chars
         };
 
-        let result = service.create_user(request).await;
+        let result = service.create_user(get_test_app_id(), request).await;
         assert!(result.is_ok());
     }
 
@@ -1982,11 +2147,17 @@ mod tests {
         let service = UserService::new(pool);
         let request = create_test_user_request();
 
-        let user = service.create_user(request).await.unwrap();
+        let user = service
+            .create_user(get_test_app_id(), request)
+            .await
+            .unwrap();
 
         // Verify User struct doesn't contain password_hash field
         // This is enforced by the type system, but we can verify the data integrity
-        let retrieved_user = service.get_user_by_id(user.id).await.unwrap();
+        let retrieved_user = service
+            .get_user_by_id(get_test_app_id(), user.id)
+            .await
+            .unwrap();
 
         // User should have all expected fields but no password_hash
         assert!(retrieved_user.id == user.id);
@@ -1995,7 +2166,7 @@ mod tests {
 
         // The actual password verification should still work
         assert!(service
-            .verify_password(user.id, "SecurePass123!")
+            .verify_password(get_test_app_id(), user.id, "SecurePass123!")
             .await
             .unwrap());
     }
@@ -2003,14 +2174,14 @@ mod tests {
     #[sqlx::test]
     async fn test_request_signin_otp_without_email_service_fails(pool: sqlx::PgPool) {
         let service = UserService::new(pool.clone());
-        let user = create_verified_user(&service).await;
+        let _user = create_verified_user(&service).await;
 
         let request = create_test_otp_signin_email_request();
         let ip_address = Some("127.0.0.1".parse::<IpAddr>().unwrap());
         let user_agent = Some("test-agent".to_string());
 
         let result = service
-            .request_signin_otp(request, ip_address, user_agent)
+            .request_signin_otp(get_test_app_id(), request, ip_address, user_agent)
             .await;
         assert!(result.is_err());
 
@@ -2048,7 +2219,7 @@ mod tests {
         let user_agent = Some("test-agent".to_string());
 
         let result = service
-            .request_signin_otp(request, ip_address, user_agent)
+            .request_signin_otp(get_test_app_id(), request, ip_address, user_agent)
             .await;
         assert!(result.is_err());
 

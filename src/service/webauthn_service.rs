@@ -279,6 +279,7 @@ impl WebAuthnService {
     /// ```
     pub async fn begin_passkey_registration(
         &self,
+        app_id: Uuid,
         user_id: Uuid,
         _request: PasskeyRegistrationBeginRequest,
     ) -> WebAuthnServiceResult<PasskeyRegistrationBeginResponse> {
@@ -309,6 +310,7 @@ impl WebAuthnService {
 
         // Store challenge in database
         self.store_challenge(
+            app_id,
             Some(user_id),
             ChallengeType::Registration,
             reg_state,
@@ -372,12 +374,13 @@ impl WebAuthnService {
     /// ```
     pub async fn finish_passkey_registration(
         &self,
+        app_id: Uuid,
         user_id: Uuid,
         request: PasskeyRegistrationFinishRequest,
     ) -> WebAuthnServiceResult<PasskeyRegistrationFinishResponse> {
         // Retrieve and validate challenge
         let challenge = self
-            .get_and_remove_challenge(Some(user_id), ChallengeType::Registration)
+            .get_and_remove_challenge(app_id, Some(user_id), ChallengeType::Registration)
             .await?;
 
         // Deserialize registration state
@@ -407,14 +410,14 @@ impl WebAuthnService {
                 })?,
             public_key: vec![0u8; 32], // Placeholder - extract from attestation
             sign_count: 0,
-            user_handle: challenge
-                .user_handle
-                .unwrap_or_else(|| self.generate_user_handle(user_id)),
+            user_handle: self.generate_user_handle(user_id),
             credential_name: request.credential_name.clone(),
             authenticator_data: Some(request.credential.clone()),
         };
 
-        let stored_credential = self.store_credential(user_id, credential_data).await?;
+        let stored_credential = self
+            .store_credential(user_id, credential_data, app_id)
+            .await?;
 
         Ok(PasskeyRegistrationFinishResponse {
             message: "Passkey registered successfully".to_string(),
@@ -473,6 +476,7 @@ impl WebAuthnService {
     /// ```
     pub async fn begin_passkey_authentication(
         &self,
+        app_id: Uuid,
         request: PasskeyAuthenticationBeginRequest,
     ) -> WebAuthnServiceResult<PasskeyAuthenticationBeginResponse> {
         // Get allowed credentials for authentication
@@ -494,8 +498,14 @@ impl WebAuthnService {
             })?;
 
         // Store challenge in database (no user_id for authentication)
-        self.store_challenge(None, ChallengeType::Authentication, auth_state, None)
-            .await?;
+        self.store_challenge(
+            app_id,
+            None,
+            ChallengeType::Authentication,
+            auth_state,
+            None,
+        )
+        .await?;
 
         Ok(PasskeyAuthenticationBeginResponse {
             options: rcr.public_key,
@@ -554,11 +564,12 @@ impl WebAuthnService {
     /// ```
     pub async fn finish_passkey_authentication(
         &self,
+        app_id: Uuid,
         request: PasskeyAuthenticationFinishRequest,
     ) -> WebAuthnServiceResult<PasskeyAuthenticationFinishResponse> {
         // Retrieve and validate challenge
         let _challenge = self
-            .get_and_remove_challenge(None, ChallengeType::Authentication)
+            .get_and_remove_challenge(app_id, None, ChallengeType::Authentication)
             .await?;
 
         // Get credential from the request
@@ -588,7 +599,7 @@ impl WebAuthnService {
         // Generate JWT tokens
         let token_pair = self
             .jwt_service
-            .generate_token_pair(user.id, None, None)
+            .generate_token_pair(app_id, user.id, None, None)
             .await
             .map_err(|e| {
                 WebAuthnServiceError::JwtServiceError(format!("Token generation failed: {}", e))
@@ -620,13 +631,15 @@ impl WebAuthnService {
     /// Delete a user's passkey
     pub async fn delete_passkey(
         &self,
+        app_id: Uuid,
         user_id: Uuid,
         request: DeletePasskeyRequest,
     ) -> WebAuthnServiceResult<DeletePasskeyResponse> {
         let credential_id_bytes = BASE64_URL_SAFE_NO_PAD.decode(&request.credential_id)?;
 
         let result = sqlx::query!(
-            "DELETE FROM user_credentials WHERE user_id = $1 AND credential_id = $2",
+            "DELETE FROM webauthn_credentials WHERE application_id = $1 AND user_id = $2 AND credential_id = $3",
+            app_id,
             user_id,
             credential_id_bytes
         )
@@ -646,6 +659,7 @@ impl WebAuthnService {
     /// Update passkey name
     pub async fn update_passkey(
         &self,
+        app_id: Uuid,
         user_id: Uuid,
         credential_id: &str,
         request: UpdatePasskeyRequest,
@@ -653,8 +667,9 @@ impl WebAuthnService {
         let credential_id_bytes = BASE64_URL_SAFE_NO_PAD.decode(credential_id)?;
 
         let result = sqlx::query!(
-            "UPDATE user_credentials SET credential_name = $1 WHERE user_id = $2 AND credential_id = $3",
+            "UPDATE webauthn_credentials SET name = $1 WHERE application_id = $2 AND user_id = $3 AND credential_id = $4",
             request.credential_name,
+            app_id,
             user_id,
             credential_id_bytes
         )
@@ -668,7 +683,7 @@ impl WebAuthnService {
         // Get updated credential
         let credential_row = sqlx::query_as!(
             UserCredentialRow,
-            "SELECT * FROM user_credentials WHERE user_id = $1 AND credential_id = $2",
+            "SELECT id, application_id, user_id, credential_id, public_key, sign_count, name, created_at as \"created_at!\", updated_at as \"updated_at!\" FROM webauthn_credentials WHERE user_id = $1 AND credential_id = $2",
             user_id,
             credential_id_bytes
         )
@@ -735,7 +750,7 @@ impl WebAuthnService {
     async fn get_user_by_id(&self, user_id: Uuid) -> WebAuthnServiceResult<User> {
         let user = sqlx::query_as!(
             User,
-            "SELECT id, name, email, profile_picture_url, email_verified, created_at, updated_at
+            "SELECT id, application_id, name, email, profile_picture_url, email_verified, created_at as \"created_at!\", updated_at as \"updated_at!\"
              FROM users WHERE id = $1",
             user_id
         )
@@ -751,7 +766,7 @@ impl WebAuthnService {
         user_id: Uuid,
     ) -> WebAuthnServiceResult<Vec<CredentialID>> {
         let rows = sqlx::query!(
-            "SELECT credential_id FROM user_credentials WHERE user_id = $1",
+            "SELECT credential_id FROM webauthn_credentials WHERE user_id = $1",
             user_id
         )
         .fetch_all(&self.pool)
@@ -767,7 +782,7 @@ impl WebAuthnService {
     async fn get_credentials_by_email(&self, email: &str) -> WebAuthnServiceResult<Vec<Passkey>> {
         let _rows = sqlx::query_as!(
             UserCredentialRow,
-            "SELECT uc.* FROM user_credentials uc
+            "SELECT uc.id, uc.application_id, uc.user_id, uc.credential_id, uc.public_key, uc.sign_count, uc.name, uc.created_at as \"created_at!\", uc.updated_at as \"updated_at!\" FROM webauthn_credentials uc
              JOIN users u ON uc.user_id = u.id
              WHERE u.email = $1",
             email
@@ -787,7 +802,7 @@ impl WebAuthnService {
     ) -> WebAuthnServiceResult<UserCredentialRow> {
         let credential = sqlx::query_as!(
             UserCredentialRow,
-            "SELECT * FROM user_credentials WHERE credential_id = $1",
+            "SELECT id, application_id, user_id, credential_id, public_key, sign_count, name, created_at as \"created_at!\", updated_at as \"updated_at!\" FROM webauthn_credentials WHERE credential_id = $1",
             credential_id
         )
         .fetch_optional(&self.pool)
@@ -805,8 +820,8 @@ impl WebAuthnService {
         let rows = if let Some(filter) = name_filter {
             sqlx::query_as!(
                 UserCredentialRow,
-                "SELECT * FROM user_credentials
-                 WHERE user_id = $1 AND credential_name ILIKE $2
+                "SELECT id, application_id, user_id, credential_id, public_key, sign_count, name, created_at as \"created_at!\", updated_at as \"updated_at!\" FROM webauthn_credentials
+                 WHERE user_id = $1 AND name ILIKE $2
                  ORDER BY created_at DESC",
                 user_id,
                 format!("%{}%", filter)
@@ -816,7 +831,7 @@ impl WebAuthnService {
         } else {
             sqlx::query_as!(
                 UserCredentialRow,
-                "SELECT * FROM user_credentials
+                "SELECT id, application_id, user_id, credential_id, public_key, sign_count, name, created_at as \"created_at!\", updated_at as \"updated_at!\" FROM webauthn_credentials
                  WHERE user_id = $1
                  ORDER BY created_at DESC",
                 user_id
@@ -831,10 +846,11 @@ impl WebAuthnService {
     /// Store WebAuthn challenge in database
     async fn store_challenge<T: serde::Serialize>(
         &self,
+        app_id: Uuid,
         user_id: Option<Uuid>,
         challenge_type: ChallengeType,
         state: T,
-        user_handle: Option<&[u8]>,
+        _user_handle: Option<&[u8]>,
     ) -> WebAuthnServiceResult<()> {
         let challenge_bytes = serde_json::to_vec(&state)
             .map_err(|e| WebAuthnServiceError::SerializationError(e.to_string()))?;
@@ -843,13 +859,13 @@ impl WebAuthnService {
             Utc::now() + Duration::seconds(self.config.challenge_timeout_seconds as i64);
 
         sqlx::query!(
-            "INSERT INTO webauthn_challenges (user_id, challenge_type, challenge, expires_at, user_handle)
+            "INSERT INTO webauthn_challenges (application_id, user_id, challenge_type, challenge, expires_at)
              VALUES ($1, $2, $3, $4, $5)",
+            app_id,
             user_id,
             String::from(challenge_type),
             challenge_bytes,
-            expires_at,
-            user_handle
+            expires_at
         )
         .execute(&self.pool)
         .await?;
@@ -860,6 +876,7 @@ impl WebAuthnService {
     /// Get and remove challenge from database
     async fn get_and_remove_challenge(
         &self,
+        app_id: Uuid,
         user_id: Option<Uuid>,
         challenge_type: ChallengeType,
     ) -> WebAuthnServiceResult<WebAuthnChallenge> {
@@ -867,8 +884,9 @@ impl WebAuthnService {
             sqlx::query_as!(
                 WebAuthnChallenge,
                 "DELETE FROM webauthn_challenges
-                 WHERE user_id = $1 AND challenge_type = $2 AND expires_at > NOW()
-                 RETURNING *",
+                 WHERE application_id = $1 AND user_id = $2 AND challenge_type = $3 AND expires_at > NOW()
+                 RETURNING id, application_id, user_id, challenge, challenge_type, expires_at as \"expires_at!\", used_at as \"used_at?\", created_at as \"created_at!\"",
+                app_id,
                 uid,
                 String::from(challenge_type)
             )
@@ -878,8 +896,9 @@ impl WebAuthnService {
             sqlx::query_as!(
                 WebAuthnChallenge,
                 "DELETE FROM webauthn_challenges
-                 WHERE user_id IS NULL AND challenge_type = $1 AND expires_at > NOW()
-                 RETURNING *",
+                 WHERE application_id = $1 AND challenge_type = $2 AND expires_at > NOW()
+                 RETURNING id, application_id, user_id as \"user_id?\", challenge, challenge_type, expires_at as \"expires_at!\", used_at as \"used_at?\", created_at as \"created_at!\"",
+                app_id,
                 String::from(challenge_type)
             )
             .fetch_optional(&self.pool)
@@ -894,19 +913,20 @@ impl WebAuthnService {
         &self,
         user_id: Uuid,
         data: CredentialCreationData,
+        app_id: Uuid,
     ) -> WebAuthnServiceResult<UserCredential> {
         let credential_row = sqlx::query_as!(
             UserCredentialRow,
-            "INSERT INTO user_credentials
-             (user_id, credential_id, public_key, sign_count, credential_name, authenticator_data)
+            "INSERT INTO webauthn_credentials
+             (application_id, user_id, credential_id, public_key, sign_count, name)
              VALUES ($1, $2, $3, $4, $5, $6)
-             RETURNING *",
+             RETURNING id, application_id, user_id, credential_id, public_key, sign_count, name, created_at as \"created_at!\", updated_at as \"updated_at!\"",
+            app_id,
             user_id,
             data.credential_id,
             data.public_key,
-            data.sign_count as i64,
-            data.credential_name,
-            data.authenticator_data
+            data.sign_count as i32,
+            data.credential_name
         )
         .fetch_one(&self.pool)
         .await?;
@@ -922,8 +942,8 @@ impl WebAuthnService {
         new_sign_count: u32,
     ) -> WebAuthnServiceResult<()> {
         sqlx::query!(
-            "UPDATE user_credentials
-             SET sign_count = $1, last_used_at = NOW()
+            "UPDATE webauthn_credentials
+             SET sign_count = $1, updated_at = NOW()
              WHERE user_id = $2 AND credential_id = $3",
             new_sign_count as i64,
             user_id,

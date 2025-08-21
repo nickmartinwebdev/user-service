@@ -16,20 +16,32 @@ pub struct AuthSession {
     /// Unique identifier for the session
     pub id: Uuid,
 
+    /// Application/tenant this session belongs to
+    pub application_id: Uuid,
+
     /// Reference to the user who owns this session
     pub user_id: Uuid,
 
-    /// Hashed refresh token (SHA-256 hash for security)
+    /// Session token for access
+    pub session_token: String,
+
+    /// Hashed refresh token for security
     pub refresh_token_hash: String,
 
     /// Timestamp when the session expires
     pub expires_at: DateTime<Utc>,
 
-    /// Timestamp when the session was created
-    pub created_at: DateTime<Utc>,
+    /// Timestamp when the refresh token expires
+    pub refresh_expires_at: DateTime<Utc>,
 
     /// Timestamp when the session was last used
     pub last_used_at: DateTime<Utc>,
+
+    /// Timestamp when the session was created
+    pub created_at: DateTime<Utc>,
+
+    /// Timestamp when the session was last updated
+    pub updated_at: DateTime<Utc>,
 
     /// Optional client user agent string
     pub user_agent: Option<String>,

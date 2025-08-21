@@ -295,6 +295,7 @@ impl OAuthService {
     /// ```
     pub async fn initiate_google_oauth(
         &self,
+        app_id: Uuid,
         redirect_url: Option<String>,
     ) -> OAuthServiceResult<GoogleOAuthInitResponse> {
         // Generate authorization URL with state token
@@ -315,10 +316,12 @@ impl OAuthService {
         // Store state token in database
         sqlx::query!(
             r#"
-            INSERT INTO oauth_states (state_token, expires_at, redirect_url)
-            VALUES ($1, $2, $3)
+            INSERT INTO oauth_states (application_id, state_token, provider_type, expires_at, redirect_uri)
+            VALUES ($1, $2, $3, $4, $5)
             "#,
+            app_id,
             state_token,
+            "google",
             expires_at,
             redirect_url
         )
@@ -390,6 +393,7 @@ impl OAuthService {
     /// ```
     pub async fn handle_google_callback(
         &self,
+        app_id: Uuid,
         query: GoogleOAuthCallbackQuery,
     ) -> OAuthServiceResult<GoogleOAuthCallbackResponse> {
         // Validate callback parameters
@@ -432,12 +436,12 @@ impl OAuthService {
             .await?;
 
         // Create or link user account
-        let (user, is_new_user) = self.create_or_link_user(&google_user).await?;
+        let (user, is_new_user) = self.create_or_link_user(app_id, &google_user).await?;
 
         // Generate JWT tokens
         let token_pair = self
             .jwt_service
-            .generate_token_pair(user.id, None, None)
+            .generate_token_pair(app_id, user.id, None, None)
             .await
             .map_err(|e| {
                 OAuthServiceError::JwtServiceError(format!("Failed to generate tokens: {}", e))
@@ -497,7 +501,7 @@ impl OAuthService {
         let state_record = sqlx::query_as!(
             OAuthState,
             r#"
-            SELECT id, state_token, expires_at, redirect_url, created_at
+            SELECT id, application_id, state_token, provider_type, expires_at, redirect_uri, created_at as "created_at!"
             FROM oauth_states
             WHERE state_token = $1
             "#,
@@ -656,6 +660,7 @@ impl OAuthService {
     /// ```
     async fn create_or_link_user(
         &self,
+        app_id: Uuid,
         google_user: &GoogleUserInfo,
     ) -> OAuthServiceResult<(User, bool)> {
         let mut tx = self.pool.begin().await?;
@@ -664,10 +669,10 @@ impl OAuthService {
         let existing_provider = sqlx::query_as!(
             OAuthProvider,
             r#"
-            SELECT id, user_id, provider, provider_user_id, provider_email,
-                   provider_data, created_at, updated_at
+            SELECT id, user_id, provider_type as "provider!", provider_user_id as "provider_user_id!", provider_email as "provider_email!",
+                   provider_data, created_at as "created_at!", updated_at as "updated_at!"
             FROM oauth_providers
-            WHERE provider = 'google' AND provider_user_id = $1
+            WHERE provider_type = 'google' AND provider_user_id = $1
             "#,
             google_user.id
         )
@@ -679,8 +684,8 @@ impl OAuthService {
             let user = sqlx::query_as!(
                 UserWithPassword,
                 r#"
-                SELECT id, name, email, password_hash, email_verified,
-                       profile_picture_url, created_at, updated_at
+                SELECT id, application_id, name, email, email_verified,
+                       profile_picture_url, created_at as "created_at!", updated_at as "updated_at!"
                 FROM users
                 WHERE id = $1
                 "#,
@@ -698,11 +703,12 @@ impl OAuthService {
         let existing_user = sqlx::query_as!(
             UserWithPassword,
             r#"
-            SELECT id, name, email, password_hash, email_verified,
-                   profile_picture_url, created_at, updated_at
+            SELECT id, application_id, name, email, email_verified,
+                   profile_picture_url, created_at as "created_at!", updated_at as "updated_at!"
             FROM users
-            WHERE email = $1
+            WHERE application_id = $1 AND email = $2
             "#,
+            app_id,
             google_user.email
         )
         .fetch_optional(&mut *tx)
@@ -716,11 +722,12 @@ impl OAuthService {
             let new_user = sqlx::query_as!(
                 UserWithPassword,
                 r#"
-                INSERT INTO users (name, email, email_verified, profile_picture_url)
-                VALUES ($1, $2, $3, $4)
-                RETURNING id, name, email, password_hash, email_verified,
-                          profile_picture_url, created_at, updated_at
+                INSERT INTO users (application_id, name, email, email_verified, profile_picture_url)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, application_id, name, email, email_verified,
+                          profile_picture_url, created_at as "created_at!", updated_at as "updated_at!"
                 "#,
+                app_id,
                 google_user.name,
                 google_user.email,
                 true, // Google emails are always verified
@@ -733,23 +740,18 @@ impl OAuthService {
         };
 
         // Create OAuth provider record
-        let provider_data = serde_json::json!({
-            "given_name": google_user.given_name,
-            "family_name": google_user.family_name,
-            "picture": google_user.picture,
-            "locale": google_user.locale
-        });
-
         sqlx::query!(
             r#"
-            INSERT INTO oauth_providers (user_id, provider, provider_user_id, provider_email, provider_data)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO oauth_providers (application_id, user_id, provider_type, provider_user_id, provider_email, provider_data)
+            VALUES ($1, $2, $3, $4, $5, $6)
             "#,
+            app_id,
             user.id,
             "google",
             google_user.id,
             google_user.email,
-            provider_data
+            serde_json::to_value(&google_user)
+                .map_err(|e| OAuthServiceError::SerializationError(e.to_string()))?
         )
         .execute(&mut *tx)
         .await?;
@@ -859,8 +861,8 @@ impl OAuthService {
         let providers = sqlx::query_as!(
             OAuthProvider,
             r#"
-            SELECT id, user_id, provider, provider_user_id, provider_email,
-                   provider_data, created_at, updated_at
+            SELECT id, user_id, provider_type as "provider!", provider_user_id as "provider_user_id!", provider_email as "provider_email!",
+                   provider_data, created_at as "created_at!", updated_at as "updated_at!"
             FROM oauth_providers
             WHERE user_id = $1
             ORDER BY created_at ASC
@@ -923,14 +925,16 @@ impl OAuthService {
     /// ```
     pub async fn unlink_oauth_provider(
         &self,
+        app_id: Uuid,
         user_id: Uuid,
         provider_type: OAuthProviderType,
     ) -> OAuthServiceResult<bool> {
         let result = sqlx::query!(
             r#"
             DELETE FROM oauth_providers
-            WHERE user_id = $1 AND provider = $2
+            WHERE application_id = $1 AND user_id = $2 AND provider_type = $3
             "#,
+            app_id,
             user_id,
             provider_type.to_string()
         )
@@ -946,6 +950,7 @@ mod tests {
     use super::*;
     use crate::database::DatabaseConfig;
 
+    #[allow(dead_code)]
     async fn create_test_oauth_service() -> OAuthServiceResult<OAuthService> {
         let config = DatabaseConfig::from_env().unwrap();
         let pool = config.create_pool().await.unwrap();

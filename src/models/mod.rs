@@ -3,6 +3,7 @@
 //! This module contains all data structures used throughout the user service.
 //! It includes user entities, request/response types, and validation logic.
 
+pub mod application;
 pub mod auth;
 pub mod email_verification;
 pub mod login_otp;
@@ -12,6 +13,7 @@ pub mod user;
 pub mod webauthn;
 
 // Re-export commonly used types
+pub use application::*;
 pub use auth::*;
 pub use email_verification::*;
 pub use login_otp::*;

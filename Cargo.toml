@@ -17,6 +17,10 @@ path = "src/lib.rs"
 name = "user-service"
 path = "src/main.rs"
 
+[[bin]]
+name = "app-admin"
+path = "src/bin/app-admin.rs"
+
 [dependencies]
 sqlx = { version = "0.8.6", features = [
     "runtime-tokio-rustls",
@@ -66,6 +70,7 @@ webauthn-rs = { version = "0.5", features = [
     "danger-allow-state-serialisation",
 ] }
 webauthn-rs-proto = "0.5"
+clap = { version = "4.0", features = ["derive"] }
 
 [features]
 default = []

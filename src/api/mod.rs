@@ -2,6 +2,8 @@
 //!
 //! HTTP API endpoints and request handling for the user service.
 
+pub mod application_handlers;
+pub mod application_middleware;
 pub mod handlers;
 pub mod middleware;
 pub mod oauth_handlers;
@@ -11,6 +13,7 @@ pub mod security_router;
 pub mod webauthn_handlers;
 
 // Re-export commonly used types
+pub use application_middleware::{application_auth_middleware, create_cors_layer};
 pub use handlers::AppState;
 pub use middleware::{
     auth_middleware, extract_auth_user, extract_optional_auth_user, optional_auth_middleware,

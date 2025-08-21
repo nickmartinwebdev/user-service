@@ -15,10 +15,13 @@ pub struct User {
     /// Unique identifier for the user
     pub id: Uuid,
 
+    /// Application/tenant this user belongs to
+    pub application_id: Uuid,
+
     /// User's display name
     pub name: String,
 
-    /// User's email address (unique, normalized)
+    /// User's email address (unique within application)
     pub email: String,
 
     /// Whether the user's email address has been verified
@@ -43,14 +46,14 @@ pub(crate) struct UserWithPassword {
     /// Unique identifier for the user
     pub id: Uuid,
 
+    /// Application/tenant this user belongs to
+    pub application_id: Uuid,
+
     /// User's display name
     pub name: String,
 
     /// User's email address
     pub email: String,
-
-    /// bcrypt hashed password (optional for passwordless users)
-    pub password_hash: Option<String>,
 
     /// Whether the user's email address has been verified
     pub email_verified: bool,
@@ -73,6 +76,7 @@ impl From<UserWithPassword> for User {
     fn from(user_with_password: UserWithPassword) -> Self {
         User {
             id: user_with_password.id,
+            application_id: user_with_password.application_id,
             name: user_with_password.name,
             email: user_with_password.email,
             email_verified: user_with_password.email_verified,
@@ -91,9 +95,9 @@ mod tests {
     fn test_user_with_password_conversion() {
         let user_with_password = UserWithPassword {
             id: Uuid::new_v4(),
+            application_id: Uuid::new_v4(),
             name: "Test User".to_string(),
             email: "test@example.com".to_string(),
-            password_hash: Some("hashed_password".to_string()),
             email_verified: true,
             profile_picture_url: Some("https://example.com/avatar.jpg".to_string()),
             created_at: Utc::now(),

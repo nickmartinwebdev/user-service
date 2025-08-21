@@ -138,6 +138,7 @@ pub enum SecurityEventSeverity {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditLogEntry {
     pub event_type: AuthEventType,
+    pub application_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
     pub event_data: Option<JsonValue>,
     pub ip_address: Option<IpNetwork>,
@@ -153,6 +154,7 @@ impl AuditLogEntry {
     pub fn new(event_type: AuthEventType, success: bool) -> Self {
         Self {
             event_type,
+            application_id: None,
             user_id: None,
             event_data: None,
             ip_address: None,
@@ -165,7 +167,12 @@ impl AuditLogEntry {
     }
 
     /// Builder pattern methods
-    pub fn with_user_id(mut self, user_id: Uuid) -> Self {
+    pub fn with_application(mut self, application_id: Uuid) -> Self {
+        self.application_id = Some(application_id);
+        self
+    }
+
+    pub fn with_user(mut self, user_id: Uuid) -> Self {
         self.user_id = Some(user_id);
         self
     }
@@ -256,17 +263,26 @@ impl AuditLogEntry {
 /// Database record for audit log
 #[derive(Debug, sqlx::FromRow)]
 pub struct AuditLogRecord {
+    #[allow(dead_code)]
     id: Uuid,
+    #[allow(dead_code)]
+    application_id: Option<Uuid>,
+    #[allow(dead_code)]
     user_id: Option<Uuid>,
+    #[allow(dead_code)]
     event_type: String,
-    event_data: Option<JsonValue>,
+    #[allow(dead_code)]
+    metadata: Option<JsonValue>,
+    #[allow(dead_code)]
     ip_address: Option<IpNetwork>,
+    #[allow(dead_code)]
     user_agent: Option<String>,
+    #[allow(dead_code)]
     success: bool,
+    #[allow(dead_code)]
     error_message: Option<String>,
-    request_id: Option<String>,
-    session_id: Option<String>,
-    created_at: Option<DateTime<Utc>>,
+    #[allow(dead_code)]
+    created_at: DateTime<Utc>,
 }
 
 /// Audit query filters for searching audit logs
@@ -392,21 +408,20 @@ impl SecurityAuditService {
         let record_id = sqlx::query_scalar!(
             r#"
             INSERT INTO auth_audit_log (
-                user_id, event_type, event_data, ip_address, user_agent,
-                success, error_message, request_id, session_id
+                application_id, user_id, event_type, metadata, ip_address, user_agent,
+                success, error_message
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id
             "#,
+            entry.application_id,
             entry.user_id,
             event_type_str,
             entry.event_data,
             entry.ip_address,
             entry.user_agent,
             entry.success,
-            entry.error_message,
-            entry.request_id,
-            entry.session_id
+            entry.error_message
         )
         .fetch_one(&self.pool)
         .await?;
@@ -464,13 +479,16 @@ impl SecurityAuditService {
         let mut entry = AuditLogEntry::new(event_type, true);
 
         if let Some(uid) = user_id {
-            entry = entry.with_user_id(uid);
+            entry = entry.with_user(uid);
         }
         if let Some(ip) = ip_address {
             entry = entry.with_ip_address(ip);
         }
         if let Some(ua) = user_agent {
             entry = entry.with_user_agent(ua);
+        }
+        if let Some(data) = additional_data {
+            entry = entry.with_event_data(data);
         }
 
         self.log_auth_event(entry).await.map(|_| ())
@@ -588,16 +606,16 @@ impl SecurityAuditService {
                 let records = sqlx::query_as!(
                     AuditLogRecord,
                     r#"
-                    SELECT id, user_id, event_type, event_data, ip_address, user_agent,
-                           success, error_message, request_id, session_id, created_at
+                    SELECT id, application_id as "application_id?", user_id as "user_id?", event_type, metadata, ip_address, user_agent,
+                           success, error_message, created_at as "created_at!"
                     FROM auth_audit_log
                     WHERE user_id = $1 AND created_at BETWEEN $2 AND $3
                     ORDER BY created_at DESC
                     LIMIT $4 OFFSET $5
                     "#,
                     user_id,
-                    start_time,
-                    end_time,
+                    *start_time,
+                    *end_time,
                     limit as i64,
                     offset as i64
                 )
@@ -611,16 +629,16 @@ impl SecurityAuditService {
                 let records = sqlx::query_as!(
                     AuditLogRecord,
                     r#"
-                    SELECT id, user_id, event_type, event_data, ip_address, user_agent,
-                           success, error_message, request_id, session_id, created_at
+                    SELECT id, application_id as "application_id?", user_id as "user_id?", event_type, metadata, ip_address, user_agent,
+                           success, error_message, created_at as "created_at!"
                     FROM auth_audit_log
                     WHERE event_type = $1 AND created_at BETWEEN $2 AND $3
                     ORDER BY created_at DESC
                     LIMIT $4 OFFSET $5
                     "#,
                     event_type_str,
-                    start_time,
-                    end_time,
+                    *start_time,
+                    *end_time,
                     limit as i64,
                     offset as i64
                 )
@@ -633,15 +651,35 @@ impl SecurityAuditService {
                 let records = sqlx::query_as!(
                     AuditLogRecord,
                     r#"
-                    SELECT id, user_id, event_type, event_data, ip_address, user_agent,
-                           success, error_message, request_id, session_id, created_at
+                    SELECT id, application_id as "application_id?", user_id as "user_id?", event_type, metadata, ip_address, user_agent,
+                           success, error_message, created_at as "created_at!"
                     FROM auth_audit_log
                     WHERE created_at BETWEEN $1 AND $2
                     ORDER BY created_at DESC
                     LIMIT $3 OFFSET $4
                     "#,
-                    start_time,
-                    end_time,
+                    *start_time,
+                    *end_time,
+                    limit as i64,
+                    offset as i64
+                )
+                .fetch_all(&self.pool)
+                .await?;
+                Ok(records)
+            }
+            // Query by user_id only
+            (Some(user_id), None, None, None) => {
+                let records = sqlx::query_as!(
+                    AuditLogRecord,
+                    r#"
+                    SELECT id, application_id as "application_id?", user_id as "user_id?", event_type, metadata, ip_address, user_agent,
+                           success, error_message, created_at as "created_at!"
+                    FROM auth_audit_log
+                    WHERE user_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT $2 OFFSET $3
+                    "#,
+                    user_id,
                     limit as i64,
                     offset as i64
                 )
@@ -654,8 +692,8 @@ impl SecurityAuditService {
                 let records = sqlx::query_as!(
                     AuditLogRecord,
                     r#"
-                    SELECT id, user_id, event_type, event_data, ip_address, user_agent,
-                           success, error_message, request_id, session_id, created_at
+                    SELECT id, application_id as "application_id?", user_id as "user_id?", event_type, metadata, ip_address, user_agent,
+                           success, error_message, created_at as "created_at!"
                     FROM auth_audit_log
                     ORDER BY created_at DESC
                     LIMIT $1 OFFSET $2
@@ -678,7 +716,7 @@ impl SecurityAuditService {
         filters: AuditQueryFilters,
     ) -> SecurityAuditResult<Vec<AuditLogRecord>> {
         let mut query_builder = sqlx::QueryBuilder::new(
-            "SELECT id, user_id, event_type, event_data, ip_address, user_agent, success, error_message, request_id, session_id, created_at FROM auth_audit_log WHERE 1=1"
+            "SELECT id, application_id, user_id, event_type, metadata, ip_address, user_agent, success, error_message, created_at FROM auth_audit_log WHERE 1=1"
         );
 
         if let Some(user_id) = filters.user_id {

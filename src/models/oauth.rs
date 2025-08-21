@@ -49,14 +49,20 @@ pub struct OAuthState {
     /// Unique identifier for this state record
     pub id: Uuid,
 
+    /// Application/tenant this OAuth state belongs to
+    pub application_id: Uuid,
+
     /// Secure random state token
     pub state_token: String,
+
+    /// OAuth provider type
+    pub provider_type: String,
 
     /// Token expiration timestamp (typically 10 minutes from creation)
     pub expires_at: DateTime<Utc>,
 
-    /// Optional redirect URL after successful authentication
-    pub redirect_url: Option<String>,
+    /// Optional redirect URI after successful authentication
+    pub redirect_uri: Option<String>,
 
     /// Timestamp when the state token was created
     pub created_at: DateTime<Utc>,

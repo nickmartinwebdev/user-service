@@ -226,6 +226,7 @@ impl JwtService {
     /// ```
     pub async fn generate_token_pair(
         &self,
+        app_id: Uuid,
         user_id: Uuid,
         user_agent: Option<String>,
         ip_address: Option<String>,
@@ -244,10 +245,13 @@ impl JwtService {
         let refresh_token = self.encode_refresh_token(&refresh_claims)?;
 
         // Store session in database
+        let refresh_token_hash = self.hash_token(&refresh_token);
         self.create_session(
-            session_id,
+            app_id,
             user_id,
-            &refresh_token,
+            &access_token,
+            &refresh_token_hash,
+            access_expires_at,
             refresh_expires_at,
             user_agent,
             ip_address,
@@ -586,7 +590,7 @@ impl JwtService {
     /// # Arguments
     /// * `session_id` - Unique session identifier
     /// * `user_id` - User this session belongs to
-    /// * `refresh_token` - Refresh token to hash and store
+    /// * `refresh_token_hash` - Hashed refresh token to store
     /// * `expires_at` - When this session expires
     /// * `user_agent` - Optional client user agent string
     /// * `ip_address` - Optional client IP address
@@ -601,15 +605,15 @@ impl JwtService {
     /// - Session IDs are cryptographically random UUIDs
     async fn create_session(
         &self,
-        session_id: Uuid,
+        app_id: Uuid,
         user_id: Uuid,
-        refresh_token: &str,
+        session_token: &str,
+        refresh_token_hash: &str,
         expires_at: DateTime<Utc>,
+        refresh_expires_at: DateTime<Utc>,
         user_agent: Option<String>,
         ip_address: Option<String>,
     ) -> JwtServiceResult<()> {
-        let token_hash = self.hash_token(refresh_token);
-
         // Convert IP address string to IpNetwork if provided
         let ip_network = ip_address
             .as_ref()
@@ -617,13 +621,15 @@ impl JwtService {
 
         sqlx::query!(
             r#"
-            INSERT INTO auth_sessions (id, user_id, refresh_token_hash, expires_at, user_agent, ip_address)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO auth_sessions (application_id, user_id, session_token, refresh_token, expires_at, refresh_expires_at, user_agent, ip_address)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
-            session_id,
+            app_id,
             user_id,
-            token_hash,
+            session_token,
+            refresh_token_hash,
             expires_at,
+            refresh_expires_at,
             user_agent,
             ip_network as Option<IpNetwork>
         )
@@ -651,7 +657,7 @@ impl JwtService {
     async fn get_session(&self, session_id: Uuid) -> JwtServiceResult<AuthSession> {
         let session = sqlx::query_as!(
             AuthSession,
-            "SELECT id, user_id, refresh_token_hash, expires_at, created_at as \"created_at!\", last_used_at as \"last_used_at!\", user_agent, ip_address FROM auth_sessions WHERE id = $1",
+            "SELECT id, application_id, user_id, session_token, refresh_token as refresh_token_hash, expires_at as \"expires_at!\", refresh_expires_at as \"refresh_expires_at!\", updated_at as \"last_used_at!\", created_at as \"created_at!\", updated_at as \"updated_at!\", user_agent, ip_address FROM auth_sessions WHERE id = $1",
             session_id
         )
         .fetch_optional(&self.pool)
@@ -674,7 +680,7 @@ impl JwtService {
     /// * `Err(JwtServiceError)` - Database update failed
     async fn update_session_last_used(&self, session_id: Uuid) -> JwtServiceResult<()> {
         sqlx::query!(
-            "UPDATE auth_sessions SET last_used_at = NOW() WHERE id = $1",
+            "UPDATE auth_sessions SET updated_at = NOW() WHERE id = $1",
             session_id
         )
         .execute(&self.pool)

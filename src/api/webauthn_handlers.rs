@@ -16,13 +16,16 @@ use validator::Validate;
 
 use crate::{
     api::middleware::AuthUser,
-    models::webauthn::{
-        DeletePasskeyRequest, DeletePasskeyResponse, ListPasskeysRequest, ListPasskeysResponse,
-        PasskeyAuthenticationBeginRequest, PasskeyAuthenticationBeginResponse,
-        PasskeyAuthenticationFinishRequest, PasskeyAuthenticationFinishResponse,
-        PasskeyRegistrationBeginRequest, PasskeyRegistrationBeginResponse,
-        PasskeyRegistrationFinishRequest, PasskeyRegistrationFinishResponse, UpdatePasskeyRequest,
-        UpdatePasskeyResponse,
+    models::{
+        webauthn::{
+            DeletePasskeyRequest, DeletePasskeyResponse, ListPasskeysRequest, ListPasskeysResponse,
+            PasskeyAuthenticationBeginRequest, PasskeyAuthenticationBeginResponse,
+            PasskeyAuthenticationFinishRequest, PasskeyAuthenticationFinishResponse,
+            PasskeyRegistrationBeginRequest, PasskeyRegistrationBeginResponse,
+            PasskeyRegistrationFinishRequest, PasskeyRegistrationFinishResponse,
+            UpdatePasskeyRequest, UpdatePasskeyResponse,
+        },
+        AppContext,
     },
     utils::error::{AppError, AppResult},
 };
@@ -44,6 +47,7 @@ use super::AppState;
 /// - `500 Internal Server Error`: Server error
 pub async fn begin_passkey_registration(
     State(state): State<AppState>,
+    Extension(app_ctx): Extension<AppContext>,
     Extension(auth_user): Extension<AuthUser>,
     Json(request): Json<PasskeyRegistrationBeginRequest>,
 ) -> AppResult<Json<PasskeyRegistrationBeginResponse>> {
@@ -60,7 +64,7 @@ pub async fn begin_passkey_registration(
 
     // Begin registration
     let response = webauthn_service
-        .begin_passkey_registration(auth_user.0.user_id, request)
+        .begin_passkey_registration(app_ctx.application_id, auth_user.0.user_id, request)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to begin registration: {}", e)))?;
 
@@ -83,6 +87,7 @@ pub async fn begin_passkey_registration(
 /// - `500 Internal Server Error`: Server error
 pub async fn finish_passkey_registration(
     State(state): State<AppState>,
+    Extension(app_ctx): Extension<AppContext>,
     Extension(auth_user): Extension<AuthUser>,
     Json(request): Json<PasskeyRegistrationFinishRequest>,
 ) -> AppResult<Json<PasskeyRegistrationFinishResponse>> {
@@ -99,7 +104,7 @@ pub async fn finish_passkey_registration(
 
     // Complete registration
     let response = webauthn_service
-        .finish_passkey_registration(auth_user.0.user_id, request)
+        .finish_passkey_registration(app_ctx.application_id, auth_user.0.user_id, request)
         .await
         .map_err(|e| AppError::BadRequest(format!("Registration failed: {}", e)))?;
 
@@ -120,6 +125,7 @@ pub async fn finish_passkey_registration(
 /// - `500 Internal Server Error`: Server error
 pub async fn begin_passkey_authentication(
     State(state): State<AppState>,
+    Extension(app_ctx): Extension<AppContext>,
     Json(request): Json<PasskeyAuthenticationBeginRequest>,
 ) -> AppResult<Json<PasskeyAuthenticationBeginResponse>> {
     // Get WebAuthn service
@@ -130,7 +136,7 @@ pub async fn begin_passkey_authentication(
 
     // Begin authentication
     let response = webauthn_service
-        .begin_passkey_authentication(request)
+        .begin_passkey_authentication(app_ctx.application_id, request)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to begin authentication: {}", e)))?;
 
@@ -152,6 +158,7 @@ pub async fn begin_passkey_authentication(
 /// - `500 Internal Server Error`: Server error
 pub async fn finish_passkey_authentication(
     State(state): State<AppState>,
+    Extension(app_ctx): Extension<AppContext>,
     Json(request): Json<PasskeyAuthenticationFinishRequest>,
 ) -> AppResult<Json<PasskeyAuthenticationFinishResponse>> {
     // Get WebAuthn service
@@ -162,7 +169,7 @@ pub async fn finish_passkey_authentication(
 
     // Complete authentication
     let response = webauthn_service
-        .finish_passkey_authentication(request)
+        .finish_passkey_authentication(app_ctx.application_id, request)
         .await
         .map_err(|e| AppError::Authentication(format!("Authentication failed: {}", e)))?;
 
@@ -183,6 +190,7 @@ pub async fn finish_passkey_authentication(
 /// - `500 Internal Server Error`: Server error
 pub async fn list_user_passkeys(
     State(state): State<AppState>,
+    Extension(_app_ctx): Extension<AppContext>,
     Extension(auth_user): Extension<AuthUser>,
     Query(request): Query<ListPasskeysRequest>,
 ) -> AppResult<Json<ListPasskeysResponse>> {
@@ -220,6 +228,7 @@ pub async fn list_user_passkeys(
 /// - `500 Internal Server Error`: Server error
 pub async fn update_passkey(
     State(state): State<AppState>,
+    Extension(app_ctx): Extension<AppContext>,
     Extension(auth_user): Extension<AuthUser>,
     Path(credential_id): Path<String>,
     Json(request): Json<UpdatePasskeyRequest>,
@@ -237,7 +246,12 @@ pub async fn update_passkey(
 
     // Update credential
     let response = webauthn_service
-        .update_passkey(auth_user.0.user_id, &credential_id, request)
+        .update_passkey(
+            app_ctx.application_id,
+            auth_user.0.user_id,
+            &credential_id,
+            request,
+        )
         .await
         .map_err(|e| match e.to_string().contains("not found") {
             true => AppError::NotFound("Credential not found".to_string()),
@@ -262,6 +276,7 @@ pub async fn update_passkey(
 /// - `500 Internal Server Error`: Server error
 pub async fn delete_passkey(
     State(state): State<AppState>,
+    Extension(app_ctx): Extension<AppContext>,
     Extension(auth_user): Extension<AuthUser>,
     Path(credential_id): Path<String>,
 ) -> AppResult<Json<DeletePasskeyResponse>> {
@@ -278,7 +293,7 @@ pub async fn delete_passkey(
 
     // Delete credential
     let response = webauthn_service
-        .delete_passkey(auth_user.0.user_id, request)
+        .delete_passkey(app_ctx.application_id, auth_user.0.user_id, request)
         .await
         .map_err(|e| match e.to_string().contains("not found") {
             true => AppError::NotFound("Credential not found".to_string()),
@@ -318,7 +333,7 @@ pub async fn cleanup_expired_challenges(State(state): State<AppState>) -> AppRes
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Test imports would go here when tests are implemented
 
     // Note: These are placeholder tests. In a real implementation, you would
     // need to set up proper test fixtures with database connections and

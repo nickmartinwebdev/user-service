@@ -26,6 +26,10 @@ pub enum AppError {
     #[error("Authentication error: {0}")]
     Authentication(String),
 
+    /// Unauthorized access errors
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     /// JWT token validation errors
     #[error("Invalid token: {0}")]
     InvalidToken(String),
@@ -53,6 +57,10 @@ pub enum AppError {
     /// Bad request errors
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    /// Forbidden access errors
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
 
     /// External service errors
     #[error("External service error: {0}")]
@@ -110,6 +118,7 @@ impl IntoResponse for AppError {
             AppError::Authentication(msg) => {
                 (StatusCode::UNAUTHORIZED, "AUTHENTICATION_ERROR", msg)
             }
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
             AppError::InvalidToken(msg) => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN", msg),
             AppError::TokenGeneration(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -123,6 +132,7 @@ impl IntoResponse for AppError {
                 (StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_REQUESTS", msg)
             }
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
             AppError::ExternalService(_) => (
                 StatusCode::BAD_GATEWAY,
                 "EXTERNAL_SERVICE_ERROR",

@@ -15,7 +15,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    models::requests::*,
+    models::{application::AppContext, requests::*},
     service::{JwtService, RateLimitService, SecurityAuditService, UserService},
     utils::error::{AppError, AppResult},
     VERSION,
@@ -28,6 +28,8 @@ use crate::{
 /// across async handlers.
 #[derive(Clone)]
 pub struct AppState {
+    /// Application service for multi-tenant management
+    pub application_service: Arc<crate::service::ApplicationService>,
     /// User service instance for handling business logic
     pub user_service: Arc<UserService>,
     /// JWT service instance for authentication
@@ -71,6 +73,7 @@ impl<T> SuccessResponse<T> {
 /// without sensitive data like password hashes.
 pub async fn create_user(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     Json(request): Json<CreateUserRequest>,
 ) -> AppResult<Json<SuccessResponse<CreateUserResponse>>> {
     // Validate request data using validator crate
@@ -79,7 +82,10 @@ pub async fn create_user(
         .map_err(|e| AppError::Validation(format!("Invalid user data: {}", e)))?;
 
     // Delegate to user service for business logic
-    let user = state.user_service.create_user(request).await?;
+    let user = state
+        .user_service
+        .create_user(app_ctx.application_id, request)
+        .await?;
 
     // Transform internal user model to API response
     let response = CreateUserResponse {
@@ -99,10 +105,14 @@ pub async fn create_user(
 /// Returns user data without sensitive information like password hashes.
 pub async fn get_user(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     Path(user_id): Path<Uuid>,
 ) -> AppResult<Json<SuccessResponse<crate::models::user::User>>> {
     // Delegate to user service to fetch user data
-    let user = state.user_service.get_user_by_id(user_id).await?;
+    let user = state
+        .user_service
+        .get_user_by_id(app_ctx.application_id, user_id)
+        .await?;
     Ok(Json(SuccessResponse::new(user)))
 }
 
@@ -112,6 +122,7 @@ pub async fn get_user(
 /// fields will be updated, null/missing fields will be ignored.
 pub async fn update_user(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     Path(user_id): Path<Uuid>,
     Json(request): Json<UpdateUserRequest>,
 ) -> AppResult<Json<SuccessResponse<crate::models::user::User>>> {
@@ -121,7 +132,10 @@ pub async fn update_user(
         .map_err(|e| AppError::Validation(format!("Invalid update data: {}", e)))?;
 
     // Delegate to user service for update logic
-    let user = state.user_service.update_user(user_id, request).await?;
+    let user = state
+        .user_service
+        .update_user(app_ctx.application_id, user_id, request)
+        .await?;
     Ok(Json(SuccessResponse::new(user)))
 }
 
@@ -131,6 +145,7 @@ pub async fn update_user(
 /// The URL should point to a valid image resource.
 pub async fn update_profile_picture(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     Path(user_id): Path<Uuid>,
     Json(request): Json<UpdateProfilePictureRequest>,
 ) -> AppResult<Json<SuccessResponse<crate::models::user::User>>> {
@@ -142,7 +157,7 @@ pub async fn update_profile_picture(
     // Delegate to user service for profile picture update
     let user = state
         .user_service
-        .update_profile_picture(user_id, request)
+        .update_profile_picture(app_ctx.application_id, user_id, request)
         .await?;
     Ok(Json(SuccessResponse::new(user)))
 }
@@ -153,10 +168,14 @@ pub async fn update_profile_picture(
 /// setting the profile_picture_url field to null.
 pub async fn remove_profile_picture(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     Path(user_id): Path<Uuid>,
 ) -> AppResult<Json<SuccessResponse<crate::models::user::User>>> {
     // Delegate to user service for profile picture removal
-    let user = state.user_service.remove_profile_picture(user_id).await?;
+    let user = state
+        .user_service
+        .remove_profile_picture(app_ctx.application_id, user_id)
+        .await?;
     Ok(Json(SuccessResponse::new(user)))
 }
 
@@ -166,6 +185,7 @@ pub async fn remove_profile_picture(
 /// password hash. Used for authentication and password confirmation flows.
 pub async fn verify_password(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     Path(user_id): Path<Uuid>,
     Json(request): Json<VerifyPasswordRequest>,
 ) -> AppResult<Json<SuccessResponse<VerifyPasswordResponse>>> {
@@ -177,7 +197,7 @@ pub async fn verify_password(
     // Delegate to user service for password verification
     let is_valid = state
         .user_service
-        .verify_password(user_id, &request.password)
+        .verify_password(app_ctx.application_id, user_id, &request.password)
         .await?;
 
     let response = VerifyPasswordResponse { valid: is_valid };
@@ -262,6 +282,7 @@ pub async fn refresh_token(
 /// email with a 6-digit code. The user must verify their email to complete registration.
 pub async fn passwordless_signup(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     Json(request): Json<PasswordlessSignupRequest>,
 ) -> AppResult<Json<SuccessResponse<PasswordlessSignupResponse>>> {
     // Validate request data
@@ -270,7 +291,10 @@ pub async fn passwordless_signup(
         .map_err(|e| AppError::Validation(format!("Invalid signup data: {}", e)))?;
 
     // Delegate to user service for passwordless signup
-    let response = state.user_service.passwordless_signup(request).await?;
+    let response = state
+        .user_service
+        .passwordless_signup(app_ctx.application_id, request)
+        .await?;
 
     Ok(Json(SuccessResponse::new(response)))
 }
@@ -282,6 +306,7 @@ pub async fn passwordless_signup(
 /// and returns authentication tokens.
 pub async fn verify_email(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     Json(request): Json<VerifyEmailRequest>,
 ) -> AppResult<Json<SuccessResponse<VerifyEmailResponse>>> {
     // Validate request data
@@ -290,7 +315,10 @@ pub async fn verify_email(
         .map_err(|e| AppError::Validation(format!("Invalid verification data: {}", e)))?;
 
     // Delegate to user service for email verification
-    let response = state.user_service.verify_email(request).await?;
+    let response = state
+        .user_service
+        .verify_email(app_ctx.application_id, request)
+        .await?;
 
     Ok(Json(SuccessResponse::new(response)))
 }
@@ -301,6 +329,7 @@ pub async fn verify_email(
 /// for passwordless sign-in. The user must have a verified email address.
 pub async fn request_signin_otp(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
     Json(request): Json<OtpSigninEmailRequest>,
@@ -320,7 +349,7 @@ pub async fn request_signin_otp(
     // Delegate to user service for OTP generation and email sending
     let response = state
         .user_service
-        .request_signin_otp(request, ip_address, user_agent)
+        .request_signin_otp(app_ctx.application_id, request, ip_address, user_agent)
         .await?;
 
     Ok(Json(SuccessResponse::new(response)))
@@ -332,6 +361,7 @@ pub async fn request_signin_otp(
 /// if the code is valid and hasn't expired.
 pub async fn verify_signin_otp(
     State(state): State<AppState>,
+    axum::Extension(app_ctx): axum::Extension<AppContext>,
     Json(request): Json<OtpSigninVerifyRequest>,
 ) -> AppResult<Json<SuccessResponse<OtpSigninVerifyResponse>>> {
     // Validate request data
@@ -340,7 +370,10 @@ pub async fn verify_signin_otp(
         .map_err(|e| AppError::Validation(format!("Invalid OTP verification data: {}", e)))?;
 
     // Delegate to user service for OTP verification and token generation
-    let response = state.user_service.verify_signin_otp(request).await?;
+    let response = state
+        .user_service
+        .verify_signin_otp(app_ctx.application_id, request)
+        .await?;
 
     Ok(Json(SuccessResponse::new(response)))
 }

@@ -156,11 +156,6 @@ mod tests {
         "OK"
     }
 
-    async fn auth_test_handler(request: Request<Body>) -> Result<&'static str, AppError> {
-        let _user_context = extract_auth_user(&request)?;
-        Ok("Authenticated OK")
-    }
-
     #[tokio::test]
     async fn test_auth_middleware_missing_header() {
         let jwt_service = create_test_jwt_service();

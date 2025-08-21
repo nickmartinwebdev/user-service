@@ -33,14 +33,14 @@ pub struct UserCredential {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct UserCredentialRow {
     pub id: Uuid,
+    pub application_id: Uuid,
     pub user_id: Uuid,
     pub credential_id: Vec<u8>,
     pub public_key: Vec<u8>,
-    pub sign_count: i64,
-    pub credential_name: Option<String>,
-    pub authenticator_data: Option<serde_json::Value>,
+    pub sign_count: i32,
+    pub name: Option<String>,
     pub created_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl From<UserCredentialRow> for UserCredential {
@@ -49,10 +49,10 @@ impl From<UserCredentialRow> for UserCredential {
             id: row.id,
             user_id: row.user_id,
             credential_id: base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(&row.credential_id),
-            credential_name: row.credential_name,
-            authenticator_data: row.authenticator_data,
+            credential_name: row.name,
+            authenticator_data: None, // Not stored in current schema
             created_at: row.created_at,
-            last_used_at: row.last_used_at,
+            last_used_at: None, // Not stored in current schema, use updated_at if needed
         }
     }
 }
@@ -61,12 +61,13 @@ impl From<UserCredentialRow> for UserCredential {
 #[derive(Debug, sqlx::FromRow)]
 pub struct WebAuthnChallenge {
     pub id: Uuid,
+    pub application_id: Uuid,
     pub user_id: Option<Uuid>,
-    pub challenge_type: String,
     pub challenge: Vec<u8>,
+    pub challenge_type: String,
     pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    pub user_handle: Option<Vec<u8>>,
 }
 
 /// Type of WebAuthn challenge
@@ -208,7 +209,7 @@ pub struct UpdatePasskeyResponse {
 }
 
 /// WebAuthn configuration for the service
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebAuthnConfig {
     /// Relying party ID (domain name)
     pub rp_id: String,
@@ -323,23 +324,23 @@ mod tests {
     fn test_user_credential_from_row() {
         let row = UserCredentialRow {
             id: Uuid::new_v4(),
+            application_id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
             credential_id: vec![1, 2, 3, 4],
             public_key: vec![5, 6, 7, 8],
             sign_count: 42,
-            credential_name: Some("Test Credential".to_string()),
-            authenticator_data: Some(serde_json::json!({"test": "data"})),
+            name: Some("Test Credential".to_string()),
             created_at: Utc::now(),
-            last_used_at: None,
+            updated_at: Utc::now(),
         };
 
         let credential = UserCredential::from(row.clone());
         assert_eq!(credential.id, row.id);
         assert_eq!(credential.user_id, row.user_id);
-        assert_eq!(credential.credential_name, row.credential_name);
-        assert_eq!(credential.authenticator_data, row.authenticator_data);
+        assert_eq!(credential.credential_name, row.name);
+        assert_eq!(credential.authenticator_data, None);
         assert_eq!(credential.created_at, row.created_at);
-        assert_eq!(credential.last_used_at, row.last_used_at);
+        assert_eq!(credential.last_used_at, None);
 
         // Check base64url encoding
         let expected_id = base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(&row.credential_id);

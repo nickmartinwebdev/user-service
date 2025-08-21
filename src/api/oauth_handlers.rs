@@ -8,13 +8,14 @@ use axum::{
     extract::{Query, State},
     http::HeaderMap,
     response::{IntoResponse, Json, Redirect},
+    Extension,
 };
 use serde_json::Value as JsonValue;
 
 use crate::{
-    models::oauth::{
-        GoogleOAuthCallbackQuery, GoogleOAuthCallbackResponse, GoogleOAuthInitRequest,
-        GoogleOAuthInitResponse,
+    models::{
+        application::AppContext,
+        oauth::{GoogleOAuthCallbackQuery, GoogleOAuthInitRequest, GoogleOAuthInitResponse},
     },
     utils::error::{AppError, AppResult},
 };
@@ -47,6 +48,7 @@ use super::handlers::SuccessResponse;
 /// ```
 pub async fn initiate_google_oauth(
     State(state): State<super::handlers::AppState>,
+    Extension(app_ctx): Extension<AppContext>,
     Json(request): Json<GoogleOAuthInitRequest>,
 ) -> AppResult<Json<SuccessResponse<GoogleOAuthInitResponse>>> {
     // Validate redirect URL if provided
@@ -72,7 +74,7 @@ pub async fn initiate_google_oauth(
         .ok_or_else(|| AppError::Internal("OAuth service not configured".to_string()))?;
 
     let oauth_response = oauth_service
-        .initiate_google_oauth(request.redirect_url)
+        .initiate_google_oauth(app_ctx.application_id, request.redirect_url)
         .await?;
 
     Ok(Json(SuccessResponse::new(oauth_response)))
@@ -109,6 +111,7 @@ pub async fn initiate_google_oauth(
 /// ```
 pub async fn handle_google_callback(
     State(state): State<super::handlers::AppState>,
+    Extension(app_ctx): Extension<AppContext>,
     Query(query): Query<GoogleOAuthCallbackQuery>,
     headers: HeaderMap,
 ) -> AppResult<axum::response::Response> {
@@ -118,7 +121,9 @@ pub async fn handle_google_callback(
         .as_ref()
         .ok_or_else(|| AppError::Internal("OAuth service not configured".to_string()))?;
 
-    let callback_response = oauth_service.handle_google_callback(query).await?;
+    let callback_response = oauth_service
+        .handle_google_callback(app_ctx.application_id, query)
+        .await?;
 
     // Check Accept header to determine response format
     let accept_header = headers
@@ -231,6 +236,7 @@ pub async fn get_user_oauth_providers(
 pub async fn unlink_oauth_provider(
     State(state): State<super::handlers::AppState>,
     axum::extract::Path(provider): axum::extract::Path<String>,
+    Extension(app_ctx): Extension<AppContext>,
     axum::Extension(auth_user): axum::Extension<crate::api::middleware::AuthUser>,
 ) -> AppResult<Json<SuccessResponse<JsonValue>>> {
     // Parse provider type
@@ -245,7 +251,7 @@ pub async fn unlink_oauth_provider(
         .ok_or_else(|| AppError::Internal("OAuth service not configured".to_string()))?;
 
     let was_unlinked = oauth_service
-        .unlink_oauth_provider(auth_user.0.user_id, provider_type)
+        .unlink_oauth_provider(app_ctx.application_id, auth_user.0.user_id, provider_type)
         .await?;
 
     if !was_unlinked {
@@ -298,8 +304,8 @@ pub async fn oauth_cleanup(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::models::oauth::GoogleOAuthInitRequest;
+    // Test imports would go here when handler functions are tested
+    use crate::{models::oauth::GoogleOAuthInitRequest, GoogleOAuthCallbackResponse};
 
     #[tokio::test]
     async fn test_initiate_google_oauth_validation() {
@@ -335,6 +341,7 @@ mod tests {
             refresh_token: "test_refresh_token".to_string(),
             user: crate::models::user::User {
                 id: uuid::Uuid::new_v4(),
+                application_id: uuid::Uuid::new_v4(),
                 name: "Test User".to_string(),
                 email: "test@example.com".to_string(),
                 email_verified: true,
